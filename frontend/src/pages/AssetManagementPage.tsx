@@ -14,6 +14,7 @@ interface AssetManagementPageProps {
   onPublishAsset?: (assetId: string) => Promise<void> | void;
   onUnpublishAsset?: (assetId: string) => Promise<void> | void;
   onUploadCommunityAsset?: (file: File, moduleKind: string) => Promise<void> | void;
+  onRefresh?: () => Promise<void> | void;
 }
 
 interface AssetPreviewState {
@@ -37,11 +38,13 @@ export function AssetManagementPage({
   onPublishAsset,
   onUnpublishAsset,
   onUploadCommunityAsset,
+  onRefresh,
 }: AssetManagementPageProps) {
   const [keyword, setKeyword] = useState("");
   const [category, setCategory] = useState("全部");
   const [activeTab, setActiveTab] = useState<AssetTab>("mine");
   const [deletingAssetId, setDeletingAssetId] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const [previewState, setPreviewState] = useState<AssetPreviewState | null>(null);
   const [communityUploadFile, setCommunityUploadFile] = useState<File | null>(null);
   const [toast, setToast] = useState<AssetToastState | null>(null);
@@ -127,6 +130,19 @@ export function AssetManagementPage({
     }
   }
 
+  async function handleRefresh() {
+    if (!onRefresh || refreshing) return;
+    setRefreshing(true);
+    try {
+      await onRefresh();
+      setToast({ type: "success", message: "资产列表已刷新" });
+    } catch (error) {
+      setToast({ type: "error", message: error instanceof Error ? error.message : "刷新资产失败" });
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   return (
     <div className="page-stack compact-page">
       {toast ? (
@@ -136,21 +152,28 @@ export function AssetManagementPage({
       ) : null}
 
       <section className="panel compact-panel asset-management-panel">
-        <div className="asset-primary-nav">
-          <button
-            className={activeTab === "mine" ? "asset-primary-nav-button active" : "asset-primary-nav-button"}
-            type="button"
-            onClick={() => setActiveTab("mine")}
-          >
-            个人资产
-          </button>
-          <button
-            className={activeTab === "community" ? "asset-primary-nav-button active" : "asset-primary-nav-button"}
-            type="button"
-            onClick={() => setActiveTab("community")}
-          >
-            社区资产
-          </button>
+        <div className="asset-management-head">
+          <div className="asset-primary-nav">
+            <button
+              className={activeTab === "mine" ? "asset-primary-nav-button active" : "asset-primary-nav-button"}
+              type="button"
+              onClick={() => setActiveTab("mine")}
+            >
+              个人资产
+            </button>
+            <button
+              className={activeTab === "community" ? "asset-primary-nav-button active" : "asset-primary-nav-button"}
+              type="button"
+              onClick={() => setActiveTab("community")}
+            >
+              社区资产
+            </button>
+          </div>
+          {onRefresh ? (
+            <button className="secondary-button compact-button asset-refresh-button" type="button" onClick={() => void handleRefresh()} disabled={refreshing}>
+              {refreshing ? "刷新中..." : "刷新"}
+            </button>
+          ) : null}
         </div>
         <div className="toolbar">
           <div className="asset-subnav">

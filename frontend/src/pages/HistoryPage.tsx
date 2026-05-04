@@ -11,6 +11,7 @@ interface HistoryPageProps {
   workspaceRuns: WorkspaceRun[];
   persistedItems: PersistedHistoryItem[];
   persistedError: string | null;
+  onRefresh?: () => Promise<void> | void;
   onDeleteHistory?: (historyId: string) => Promise<void> | void;
 }
 
@@ -24,12 +25,13 @@ interface PreviewState {
 
 const filterTags = ["全部", "文生图", "多图融合", "线稿转写实图", "产品精修", "裸石设计", "高清放大", "生成多视图", "多视图切图", "转灰度图"];
 
-export function HistoryPage({ workspaceRuns, persistedItems, persistedError, onDeleteHistory }: HistoryPageProps) {
+export function HistoryPage({ workspaceRuns, persistedItems, persistedError, onRefresh, onDeleteHistory }: HistoryPageProps) {
   const [keyword, setKeyword] = useState("");
   const [activeFilter, setActiveFilter] = useState("全部");
   const [previewState, setPreviewState] = useState<PreviewState | null>(null);
   const [pendingDeleteItem, setPendingDeleteItem] = useState<ModuleHistoryEntry | null>(null);
   const [deletingHistoryId, setDeletingHistoryId] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const [expandedPromptIds, setExpandedPromptIds] = useState<string[]>([]);
   const [collapsedHistoryIds, setCollapsedHistoryIds] = useState<string[]>([]);
   const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
@@ -87,6 +89,19 @@ export function HistoryPage({ workspaceRuns, persistedItems, persistedError, onD
     }
   }
 
+  async function handleRefresh() {
+    if (!onRefresh || refreshing) return;
+    setRefreshing(true);
+    try {
+      await onRefresh();
+      setToast({ type: "success", message: "历史记录已刷新" });
+    } catch (error) {
+      setToast({ type: "error", message: error instanceof Error ? error.message : "刷新历史记录失败" });
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   function resolveHistoryDownloadName(item: ModuleHistoryEntry): string {
     return appendSecondSuffixToName(item.title, item.createdAt);
   }
@@ -132,7 +147,14 @@ export function HistoryPage({ workspaceRuns, persistedItems, persistedError, onD
             <h3>全部操作记录</h3>
             <p className="section-description">当前会话和持久化记录已自动合并，并按时间倒序展示。</p>
           </div>
-          <span className="status-pill online">{operationItems.length} 条</span>
+          <div className="history-head-actions">
+            <span className="status-pill online">{operationItems.length} 条</span>
+            {onRefresh ? (
+              <button className="secondary-button compact-button" type="button" onClick={() => void handleRefresh()} disabled={refreshing}>
+                {refreshing ? "刷新中..." : "刷新"}
+              </button>
+            ) : null}
+          </div>
         </div>
 
         {persistedError ? <p className="error-text">{persistedError}</p> : null}

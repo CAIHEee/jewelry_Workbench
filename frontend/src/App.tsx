@@ -636,7 +636,13 @@ export default function App() {
           <FusionStudio onRecordRun={recordWorkspaceRun} assetItems={assetItems} pageRuns={fusionRuns} onDeleteHistory={handleDeleteHistory} />
         </section>
         <section className={activeView === "history" ? "view-panel active" : "view-panel hidden"}>
-          <HistoryPage workspaceRuns={workspaceRuns} persistedItems={persistedItems} persistedError={persistedError} onDeleteHistory={handleDeleteHistory} />
+          <HistoryPage
+            workspaceRuns={workspaceRuns}
+            persistedItems={persistedItems}
+            persistedError={persistedError}
+            onRefresh={refreshPersistedHistory}
+            onDeleteHistory={handleDeleteHistory}
+          />
         </section>
         <section className={activeView === "asset-management" ? "view-panel active" : "view-panel hidden"}>
           <AssetManagementPage
@@ -648,6 +654,7 @@ export default function App() {
             onPublishAsset={handlePublishAsset}
             onUnpublishAsset={handleUnpublishAsset}
             onUploadCommunityAsset={currentUser.role === "root" ? handleUploadCommunityAsset : undefined}
+            onRefresh={refreshPersistedAssets}
           />
         </section>
         <section className={activeView === "admin" ? "view-panel active" : "view-panel hidden"}>

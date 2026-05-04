@@ -4622,6 +4622,31 @@ button.agent-generation-tile.agent-generation-clickable,
   margin-bottom: 18px;
 }
 
+.history-head-actions,
+.asset-management-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.history-head-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.asset-management-head {
+  justify-content: center;
+  margin-bottom: 22px;
+}
+
+.asset-management-head .asset-primary-nav {
+  margin-bottom: 0;
+}
+
+.asset-refresh-button {
+  flex: 0 0 auto;
+}
+
 .history-inline-head {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
