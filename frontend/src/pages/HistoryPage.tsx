@@ -150,8 +150,15 @@ export function HistoryPage({ workspaceRuns, persistedItems, persistedError, onR
           <div className="history-head-actions">
             <span className="status-pill online">{operationItems.length} 条</span>
             {onRefresh ? (
-              <button className="secondary-button compact-button" type="button" onClick={() => void handleRefresh()} disabled={refreshing}>
-                {refreshing ? "刷新中..." : "刷新"}
+              <button
+                className="history-icon-button refresh-icon-button"
+                type="button"
+                onClick={() => void handleRefresh()}
+                disabled={refreshing}
+                title={refreshing ? "刷新中" : "刷新"}
+                aria-label={refreshing ? "刷新中" : "刷新历史记录"}
+              >
+                <span aria-hidden="true">{refreshing ? "…" : "↻"}</span>
               </button>
             ) : null}
           </div>

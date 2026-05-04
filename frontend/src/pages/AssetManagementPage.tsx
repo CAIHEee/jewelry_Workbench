@@ -170,8 +170,15 @@ export function AssetManagementPage({
             </button>
           </div>
           {onRefresh ? (
-            <button className="secondary-button compact-button asset-refresh-button" type="button" onClick={() => void handleRefresh()} disabled={refreshing}>
-              {refreshing ? "刷新中..." : "刷新"}
+            <button
+              className="history-icon-button refresh-icon-button asset-refresh-button"
+              type="button"
+              onClick={() => void handleRefresh()}
+              disabled={refreshing}
+              title={refreshing ? "刷新中" : "刷新"}
+              aria-label={refreshing ? "刷新中" : "刷新资产列表"}
+            >
+              <span aria-hidden="true">{refreshing ? "…" : "↻"}</span>
             </button>
           ) : null}
         </div>

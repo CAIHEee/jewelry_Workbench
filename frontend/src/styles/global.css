@@ -4647,6 +4647,13 @@ button.agent-generation-tile.agent-generation-clickable,
   flex: 0 0 auto;
 }
 
+.refresh-icon-button {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  font-size: 16px;
+}
+
 .history-inline-head {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
