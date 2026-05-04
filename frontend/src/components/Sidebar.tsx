@@ -13,7 +13,7 @@ interface SidebarProps {
 }
 
 const baseCreationItems: Array<{ key: AppView; label: string; helper: string; icon: string; featured?: boolean; moduleKey?: string; rootOnly?: boolean }> = [
-  { key: "remove-background", label: "AI Agent", helper: "DESIGN AGENT", icon: "chat", moduleKey: "remove_background" },
+  { key: "ai-agent", label: "AI Agent", helper: "DESIGN AGENT", icon: "chat", moduleKey: "ai_agent" },
   { key: "text-to-image", label: "文生图", helper: "TEXT TO IMAGE", icon: "gem", moduleKey: "text_to_image" },
   { key: "fusion", label: "多图融合", helper: "IMAGE FUSION", icon: "blend", moduleKey: "multi_image_fusion" },
   { key: "image-edit", label: "线稿转写实图", helper: "SKETCH TO REAL", icon: "pen", featured: true, moduleKey: "image_edit" },

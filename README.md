@@ -32,6 +32,9 @@ cd /home/chaihe/projects/jinma_jewelry_system/backend
 conda activate jinma_jewelry
 python -m pip install -r requirements.txt
 python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+
+python -m app.worker
 ```
 
 说明：
@@ -40,6 +43,18 @@ python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - 如果只写 `python -m uvicorn app.main:app --reload`，默认会监听 `127.0.0.1:8000`，只能本机访问。
 - 前端开发服务器现在会把 `/api` 请求代理到 `http://127.0.0.1:8000`，所以前后端在同一台机器上运行时也能正常工作。
 - `python -m app.worker` 不是后端 API 服务，它只负责执行 Redis 队列里的任务，不能处理登录接口。
+
+## Agent 服务启动
+
+AI Agent 是同仓库的独立 FastAPI 服务，复用后端登录 Cookie、数据库、资产和任务队列。开发时建议和后端 API、Redis worker 一起启动：
+
+```bash
+cd /home/chaihe/projects/jinma_jewelry_system/backend
+conda activate jinma_jewelry
+python -m uvicorn agent_service.main:app --reload --host 0.0.0.0 --port 8010
+```
+
+前端开发服务器会把 `/agent-api` 代理到 `http://127.0.0.1:8010`。如果没有配置 `AGENT_LLM_API_KEY`，Agent 会使用本地规则兜底回复和动作卡，方便先验证流程。
 
 ## 前端启动
 

@@ -11,6 +11,7 @@ MODULE_KEYS = [
     "remove_background",
     "asset_management",
     "history",
+    "ai_agent",
 ]
 
 MODULE_LABELS = {
@@ -26,4 +27,5 @@ MODULE_LABELS = {
     "remove_background": "去除背景",
     "asset_management": "资产管理",
     "history": "历史记录",
+    "ai_agent": "AI Agent",
 }

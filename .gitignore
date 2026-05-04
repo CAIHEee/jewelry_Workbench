@@ -9,3 +9,4 @@ dist/
 docx/outputs/
 backend/data/
 tmp_history.json
+cloud_env/

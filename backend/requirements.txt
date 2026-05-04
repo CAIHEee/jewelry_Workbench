@@ -13,3 +13,4 @@ rembg==2.0.67
 onnxruntime==1.22.0
 redis==5.2.1
 rq==1.16.2
+langgraph==0.2.74

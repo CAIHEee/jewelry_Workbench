@@ -7,6 +7,7 @@ import socket
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND_ENV_PATH = ROOT / "backend" / ".env"
+CLOUD_ENV_PATH = ROOT / "cloud_env" / "env.docker"
 DOCKER_TEMPLATE_PATH = ROOT / "deploy" / "docker" / ".env.docker.example"
 
 
@@ -42,7 +43,7 @@ def detect_host_origins() -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate .env.docker from backend/.env and template defaults.")
+    parser = argparse.ArgumentParser(description="Generate .env.docker from template defaults, backend/.env, and optional cloud_env/env.docker.")
     parser.add_argument("--output", required=True, help="Output .env.docker path")
     parser.add_argument("--backend-image", default="jinma-backend:offline", help="Backend image tag to write")
     parser.add_argument("--nginx-image", default="jinma-nginx:offline", help="Nginx image tag to write")
@@ -50,54 +51,58 @@ def main() -> int:
 
     template_values = parse_env_file(DOCKER_TEMPLATE_PATH)
     backend_values = parse_env_file(BACKEND_ENV_PATH)
+    cloud_values = parse_env_file(CLOUD_ENV_PATH)
     output_path = Path(args.output).resolve()
 
     merged = dict(template_values)
+    merged.update(backend_values)
+    merged.update(cloud_values)
     merged.update(
         {
             "BACKEND_IMAGE": args.backend_image,
             "NGINX_IMAGE": args.nginx_image,
-            "APP_ALLOWED_ORIGINS": detect_host_origins(),
-            "APP_PUBLIC_BASE_URL": backend_values.get("APP_PUBLIC_BASE_URL", merged.get("APP_PUBLIC_BASE_URL", "")),
-            "APP_ALLOWED_ORIGIN_REGEX": backend_values.get("APP_ALLOWED_ORIGIN_REGEX", merged.get("APP_ALLOWED_ORIGIN_REGEX", "")),
-            "AUTH_SECRET_KEY": backend_values.get("AUTH_SECRET_KEY", merged.get("AUTH_SECRET_KEY", "")),
-            "ROOT_USERNAME": backend_values.get("ROOT_USERNAME", merged.get("ROOT_USERNAME", "root")),
-            "ROOT_DISPLAY_NAME": backend_values.get("ROOT_DISPLAY_NAME", merged.get("ROOT_DISPLAY_NAME", "系统管理员")),
-            "ROOT_EMAIL": backend_values.get("ROOT_EMAIL", merged.get("ROOT_EMAIL", "root@example.com")),
-            "ROOT_DEFAULT_PASSWORD": backend_values.get("ROOT_DEFAULT_PASSWORD", merged.get("ROOT_DEFAULT_PASSWORD", "")),
-            "AI_DEFAULT_PROVIDER": backend_values.get("AI_DEFAULT_PROVIDER", merged.get("AI_DEFAULT_PROVIDER", "flux")),
-            "AI_UPSTREAM_PLATFORM": backend_values.get("AI_UPSTREAM_PLATFORM", merged.get("AI_UPSTREAM_PLATFORM", "apiyi")),
-            "AIAPIS_API_KEY": backend_values.get("AIAPIS_API_KEY", merged.get("AIAPIS_API_KEY", "")),
-            "AIAPIS_BASE_URL": backend_values.get("AIAPIS_BASE_URL", merged.get("AIAPIS_BASE_URL", "https://aiapis.help/v1")),
-            "AIAPIS_TIMEOUT_SECONDS": backend_values.get("AIAPIS_TIMEOUT_SECONDS", merged.get("AIAPIS_TIMEOUT_SECONDS", "300")),
-            "WUYIN_API_KEY": backend_values.get("WUYIN_API_KEY", merged.get("WUYIN_API_KEY", "")),
-            "WUYIN_BASE_URL": backend_values.get("WUYIN_BASE_URL", merged.get("WUYIN_BASE_URL", "https://api.wuyinkeji.com")),
-            "WUYIN_TIMEOUT_SECONDS": backend_values.get("WUYIN_TIMEOUT_SECONDS", merged.get("WUYIN_TIMEOUT_SECONDS", "120")),
-            "WUYIN_POLL_INTERVAL_SECONDS": backend_values.get("WUYIN_POLL_INTERVAL_SECONDS", merged.get("WUYIN_POLL_INTERVAL_SECONDS", "3")),
-            "WUYIN_POLL_ATTEMPTS": backend_values.get("WUYIN_POLL_ATTEMPTS", merged.get("WUYIN_POLL_ATTEMPTS", "40")),
-            "APIYI_API_KEY": backend_values.get("APIYI_API_KEY", merged.get("APIYI_API_KEY", "")),
-            "APIYI_BASE_URL": backend_values.get("APIYI_BASE_URL", merged.get("APIYI_BASE_URL", "")),
-            "APIYI_OPENAI_BASE_URL": backend_values.get("APIYI_OPENAI_BASE_URL", merged.get("APIYI_OPENAI_BASE_URL", "")),
-            "APIYI_GEMINI_BASE_URL": backend_values.get("APIYI_GEMINI_BASE_URL", merged.get("APIYI_GEMINI_BASE_URL", "")),
-            "DMXAPI_API_KEY": backend_values.get("DMXAPI_API_KEY", merged.get("DMXAPI_API_KEY", "")),
-            "DMXAPI_BASE_URL": backend_values.get("DMXAPI_BASE_URL", merged.get("DMXAPI_BASE_URL", "https://www.dmxapi.cn/v1")),
-            "DMXAPI_TIMEOUT_SECONDS": backend_values.get("DMXAPI_TIMEOUT_SECONDS", merged.get("DMXAPI_TIMEOUT_SECONDS", "180")),
-            "TTAPI_API_KEY": backend_values.get("TTAPI_API_KEY", merged.get("TTAPI_API_KEY", "")),
-            "TTAPI_FLUX_BASE_URL": backend_values.get("TTAPI_FLUX_BASE_URL", merged.get("TTAPI_FLUX_BASE_URL", "")),
-            "TTAPI_OPENAI_BASE_URL": backend_values.get("TTAPI_OPENAI_BASE_URL", merged.get("TTAPI_OPENAI_BASE_URL", "")),
-            "TTAPI_TIMEOUT_SECONDS": backend_values.get("TTAPI_TIMEOUT_SECONDS", merged.get("TTAPI_TIMEOUT_SECONDS", "120")),
-            "TTAPI_POLL_INTERVAL_SECONDS": backend_values.get("TTAPI_POLL_INTERVAL_SECONDS", merged.get("TTAPI_POLL_INTERVAL_SECONDS", "2.5")),
-            "TTAPI_POLL_ATTEMPTS": backend_values.get("TTAPI_POLL_ATTEMPTS", merged.get("TTAPI_POLL_ATTEMPTS", "24")),
-            "AI_MAX_FUSION_IMAGES": backend_values.get("AI_MAX_FUSION_IMAGES", merged.get("AI_MAX_FUSION_IMAGES", "6")),
-            "QUEUE_NAME": backend_values.get("QUEUE_NAME", merged.get("QUEUE_NAME", "jinma-ai")),
-            "QUEUE_JOB_TIMEOUT_SECONDS": backend_values.get("QUEUE_JOB_TIMEOUT_SECONDS", merged.get("QUEUE_JOB_TIMEOUT_SECONDS", "900")),
-            "QUEUE_RESULT_TTL_SECONDS": backend_values.get("QUEUE_RESULT_TTL_SECONDS", merged.get("QUEUE_RESULT_TTL_SECONDS", "3600")),
-            "QUEUE_USER_MAX_ACTIVE_JOBS": backend_values.get("QUEUE_USER_MAX_ACTIVE_JOBS", merged.get("QUEUE_USER_MAX_ACTIVE_JOBS", "1")),
-            "QUEUE_ROOT_MAX_ACTIVE_JOBS": backend_values.get("QUEUE_ROOT_MAX_ACTIVE_JOBS", merged.get("QUEUE_ROOT_MAX_ACTIVE_JOBS", "3")),
-            "CACHE_JOB_STATUS_TTL_SECONDS": backend_values.get("CACHE_JOB_STATUS_TTL_SECONDS", merged.get("CACHE_JOB_STATUS_TTL_SECONDS", "21600")),
-            "CACHE_JOB_DEDUPE_TTL_SECONDS": backend_values.get("CACHE_JOB_DEDUPE_TTL_SECONDS", merged.get("CACHE_JOB_DEDUPE_TTL_SECONDS", "120")),
-            "CACHE_MODEL_CATALOG_TTL_SECONDS": backend_values.get("CACHE_MODEL_CATALOG_TTL_SECONDS", merged.get("CACHE_MODEL_CATALOG_TTL_SECONDS", "300")),
-            "CACHE_AUTH_ME_TTL_SECONDS": backend_values.get("CACHE_AUTH_ME_TTL_SECONDS", merged.get("CACHE_AUTH_ME_TTL_SECONDS", "60")),
+            "APP_ALLOWED_ORIGINS": merged.get("APP_ALLOWED_ORIGINS") or detect_host_origins(),
+            "APP_PUBLIC_BASE_URL": merged.get("APP_PUBLIC_BASE_URL", ""),
+            "APP_ALLOWED_ORIGIN_REGEX": merged.get("APP_ALLOWED_ORIGIN_REGEX", ""),
+            "AGENT_SERVICE_ALLOWED_ORIGINS": merged.get("AGENT_SERVICE_ALLOWED_ORIGINS") or merged.get("APP_ALLOWED_ORIGINS") or detect_host_origins(),
+            "AGENT_LLM_BASE_URL": merged.get("AGENT_LLM_BASE_URL", "https://api.deepseek.com"),
+            "AGENT_LLM_API_KEY": merged.get("AGENT_LLM_API_KEY", ""),
+            "AGENT_LLM_MODEL": merged.get("AGENT_LLM_MODEL", "deepseek-v4-flash"),
+            "AGENT_LLM_TIMEOUT_SECONDS": merged.get("AGENT_LLM_TIMEOUT_SECONDS", "60"),
+            "AGENT_LLM_STRICT_TOOLS": merged.get("AGENT_LLM_STRICT_TOOLS", "true"),
+            "AUTH_SECRET_KEY": merged.get("AUTH_SECRET_KEY", ""),
+            "ROOT_USERNAME": merged.get("ROOT_USERNAME", "root"),
+            "ROOT_DISPLAY_NAME": merged.get("ROOT_DISPLAY_NAME", "系统管理员"),
+            "ROOT_EMAIL": merged.get("ROOT_EMAIL", "root@example.com"),
+            "ROOT_DEFAULT_PASSWORD": merged.get("ROOT_DEFAULT_PASSWORD", ""),
+            "AI_DEFAULT_PROVIDER": merged.get("AI_DEFAULT_PROVIDER", "flux"),
+            "AI_UPSTREAM_PLATFORM": merged.get("AI_UPSTREAM_PLATFORM", "apiyi"),
+            "AIAPIS_API_KEY": merged.get("AIAPIS_API_KEY", ""),
+            "AIAPIS_BASE_URL": merged.get("AIAPIS_BASE_URL", "https://img.aiapis.help/v1"),
+            "AIAPIS_TIMEOUT_SECONDS": merged.get("AIAPIS_TIMEOUT_SECONDS", "300"),
+            "APIYI_API_KEY": merged.get("APIYI_API_KEY", ""),
+            "APIYI_BASE_URL": merged.get("APIYI_BASE_URL", ""),
+            "APIYI_OPENAI_BASE_URL": merged.get("APIYI_OPENAI_BASE_URL", ""),
+            "APIYI_GEMINI_BASE_URL": merged.get("APIYI_GEMINI_BASE_URL", ""),
+            "DMXAPI_API_KEY": merged.get("DMXAPI_API_KEY", ""),
+            "DMXAPI_BASE_URL": merged.get("DMXAPI_BASE_URL", "https://www.dmxapi.cn/v1"),
+            "DMXAPI_TIMEOUT_SECONDS": merged.get("DMXAPI_TIMEOUT_SECONDS", "600"),
+            "TTAPI_API_KEY": merged.get("TTAPI_API_KEY", ""),
+            "TTAPI_FLUX_BASE_URL": merged.get("TTAPI_FLUX_BASE_URL", ""),
+            "TTAPI_OPENAI_BASE_URL": merged.get("TTAPI_OPENAI_BASE_URL", ""),
+            "TTAPI_TIMEOUT_SECONDS": merged.get("TTAPI_TIMEOUT_SECONDS", "120"),
+            "TTAPI_POLL_INTERVAL_SECONDS": merged.get("TTAPI_POLL_INTERVAL_SECONDS", "2.5"),
+            "TTAPI_POLL_ATTEMPTS": merged.get("TTAPI_POLL_ATTEMPTS", "24"),
+            "AI_MAX_FUSION_IMAGES": merged.get("AI_MAX_FUSION_IMAGES", "6"),
+            "QUEUE_NAME": merged.get("QUEUE_NAME", "jinma-ai"),
+            "QUEUE_JOB_TIMEOUT_SECONDS": merged.get("QUEUE_JOB_TIMEOUT_SECONDS", "900"),
+            "QUEUE_RESULT_TTL_SECONDS": merged.get("QUEUE_RESULT_TTL_SECONDS", "3600"),
+            "QUEUE_USER_MAX_ACTIVE_JOBS": merged.get("QUEUE_USER_MAX_ACTIVE_JOBS", "1"),
+            "QUEUE_ROOT_MAX_ACTIVE_JOBS": merged.get("QUEUE_ROOT_MAX_ACTIVE_JOBS", "3"),
+            "CACHE_JOB_STATUS_TTL_SECONDS": merged.get("CACHE_JOB_STATUS_TTL_SECONDS", "21600"),
+            "CACHE_JOB_DEDUPE_TTL_SECONDS": merged.get("CACHE_JOB_DEDUPE_TTL_SECONDS", "120"),
+            "CACHE_MODEL_CATALOG_TTL_SECONDS": merged.get("CACHE_MODEL_CATALOG_TTL_SECONDS", "300"),
+            "CACHE_AUTH_ME_TTL_SECONDS": merged.get("CACHE_AUTH_ME_TTL_SECONDS", "60"),
         }
     )
 
@@ -134,6 +139,14 @@ def main() -> int:
         f"APP_PUBLIC_BASE_URL={merged['APP_PUBLIC_BASE_URL']}",
         f"APP_ALLOWED_ORIGIN_REGEX={merged['APP_ALLOWED_ORIGIN_REGEX']}",
         "",
+        "# Agent 独立服务与对话模型配置。AGENT_LLM_API_KEY 留空时使用规则兜底回复。",
+        f"AGENT_SERVICE_ALLOWED_ORIGINS={merged['AGENT_SERVICE_ALLOWED_ORIGINS']}",
+        f"AGENT_LLM_BASE_URL={merged['AGENT_LLM_BASE_URL']}",
+        f"AGENT_LLM_API_KEY={merged['AGENT_LLM_API_KEY']}",
+        f"AGENT_LLM_MODEL={merged['AGENT_LLM_MODEL']}",
+        f"AGENT_LLM_TIMEOUT_SECONDS={merged['AGENT_LLM_TIMEOUT_SECONDS']}",
+        f"AGENT_LLM_STRICT_TOOLS={merged['AGENT_LLM_STRICT_TOOLS']}",
+        "",
         "# 应用鉴权密钥。生产环境必须修改。",
         f"AUTH_SECRET_KEY={merged['AUTH_SECRET_KEY']}",
         "",
@@ -149,11 +162,6 @@ def main() -> int:
         f"AIAPIS_API_KEY={merged['AIAPIS_API_KEY']}",
         f"AIAPIS_BASE_URL={merged['AIAPIS_BASE_URL']}",
         f"AIAPIS_TIMEOUT_SECONDS={merged['AIAPIS_TIMEOUT_SECONDS']}",
-        f"WUYIN_API_KEY={merged['WUYIN_API_KEY']}",
-        f"WUYIN_BASE_URL={merged['WUYIN_BASE_URL']}",
-        f"WUYIN_TIMEOUT_SECONDS={merged['WUYIN_TIMEOUT_SECONDS']}",
-        f"WUYIN_POLL_INTERVAL_SECONDS={merged['WUYIN_POLL_INTERVAL_SECONDS']}",
-        f"WUYIN_POLL_ATTEMPTS={merged['WUYIN_POLL_ATTEMPTS']}",
         f"APIYI_API_KEY={merged['APIYI_API_KEY']}",
         f"APIYI_BASE_URL={merged['APIYI_BASE_URL']}",
         f"APIYI_OPENAI_BASE_URL={merged['APIYI_OPENAI_BASE_URL']}",

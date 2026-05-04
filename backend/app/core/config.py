@@ -78,6 +78,18 @@ class Settings(BaseSettings):
     cache_job_dedupe_ttl_seconds: int = Field(default=180, alias="CACHE_JOB_DEDUPE_TTL_SECONDS")
     cache_model_catalog_ttl_seconds: int = Field(default=300, alias="CACHE_MODEL_CATALOG_TTL_SECONDS")
     cache_auth_me_ttl_seconds: int = Field(default=60, alias="CACHE_AUTH_ME_TTL_SECONDS")
+    agent_llm_base_url: str = Field(default="https://api.deepseek.com", alias="AGENT_LLM_BASE_URL")
+    agent_llm_api_key: str | None = Field(default=None, alias="AGENT_LLM_API_KEY")
+    agent_llm_model: str = Field(default="deepseek-v4-flash", alias="AGENT_LLM_MODEL")
+    agent_llm_timeout_seconds: float = Field(default=60.0, alias="AGENT_LLM_TIMEOUT_SECONDS")
+    agent_llm_strict_tools: bool = Field(default=True, alias="AGENT_LLM_STRICT_TOOLS")
+    agent_vision_llm_base_url: str | None = Field(default=None, alias="AGENT_VISION_LLM_BASE_URL")
+    agent_vision_llm_api_key: str | None = Field(default=None, alias="AGENT_VISION_LLM_API_KEY")
+    agent_vision_llm_model: str | None = Field(default=None, alias="AGENT_VISION_LLM_MODEL")
+    agent_service_allowed_origins_raw: str = Field(
+        default="http://localhost:5173,http://localhost:3000",
+        alias="AGENT_SERVICE_ALLOWED_ORIGINS",
+    )
 
     @property
     def allowed_origins(self) -> list[str]:
@@ -100,6 +112,10 @@ class Settings(BaseSettings):
             and self.oss_access_key_id
             and self.oss_access_key_secret
         )
+
+    @property
+    def agent_service_allowed_origins(self) -> list[str]:
+        return [item.strip() for item in self.agent_service_allowed_origins_raw.split(",") if item.strip()]
 
 
 @lru_cache

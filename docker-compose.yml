@@ -44,10 +44,16 @@ services:
       AI_DEFAULT_PROVIDER: ${AI_DEFAULT_PROVIDER:-flux}
       AI_UPSTREAM_PLATFORM: ${AI_UPSTREAM_PLATFORM:-apiyi}
       AI_MAX_FUSION_IMAGES: ${AI_MAX_FUSION_IMAGES:-6}
+      AIAPIS_API_KEY: ${AIAPIS_API_KEY:-}
+      AIAPIS_BASE_URL: ${AIAPIS_BASE_URL:-https://img.aiapis.help/v1}
+      AIAPIS_TIMEOUT_SECONDS: ${AIAPIS_TIMEOUT_SECONDS:-300}
       APIYI_API_KEY: ${APIYI_API_KEY:-}
       APIYI_BASE_URL: ${APIYI_BASE_URL:-https://api.apiyi.com}
       APIYI_OPENAI_BASE_URL: ${APIYI_OPENAI_BASE_URL:-https://api.apiyi.com/v1}
       APIYI_GEMINI_BASE_URL: ${APIYI_GEMINI_BASE_URL:-https://api.apiyi.com/v1beta}
+      DMXAPI_API_KEY: ${DMXAPI_API_KEY:-}
+      DMXAPI_BASE_URL: ${DMXAPI_BASE_URL:-https://www.dmxapi.cn/v1}
+      DMXAPI_TIMEOUT_SECONDS: ${DMXAPI_TIMEOUT_SECONDS:-600}
       TTAPI_API_KEY: ${TTAPI_API_KEY:-}
       TTAPI_FLUX_BASE_URL: ${TTAPI_FLUX_BASE_URL:-https://api.ttapi.io}
       TTAPI_OPENAI_BASE_URL: ${TTAPI_OPENAI_BASE_URL:-https://api.ttapi.org}
@@ -111,10 +117,16 @@ services:
       AI_DEFAULT_PROVIDER: ${AI_DEFAULT_PROVIDER:-flux}
       AI_UPSTREAM_PLATFORM: ${AI_UPSTREAM_PLATFORM:-apiyi}
       AI_MAX_FUSION_IMAGES: ${AI_MAX_FUSION_IMAGES:-6}
+      AIAPIS_API_KEY: ${AIAPIS_API_KEY:-}
+      AIAPIS_BASE_URL: ${AIAPIS_BASE_URL:-https://img.aiapis.help/v1}
+      AIAPIS_TIMEOUT_SECONDS: ${AIAPIS_TIMEOUT_SECONDS:-300}
       APIYI_API_KEY: ${APIYI_API_KEY:-}
       APIYI_BASE_URL: ${APIYI_BASE_URL:-https://api.apiyi.com}
       APIYI_OPENAI_BASE_URL: ${APIYI_OPENAI_BASE_URL:-https://api.apiyi.com/v1}
       APIYI_GEMINI_BASE_URL: ${APIYI_GEMINI_BASE_URL:-https://api.apiyi.com/v1beta}
+      DMXAPI_API_KEY: ${DMXAPI_API_KEY:-}
+      DMXAPI_BASE_URL: ${DMXAPI_BASE_URL:-https://www.dmxapi.cn/v1}
+      DMXAPI_TIMEOUT_SECONDS: ${DMXAPI_TIMEOUT_SECONDS:-600}
       TTAPI_API_KEY: ${TTAPI_API_KEY:-}
       TTAPI_FLUX_BASE_URL: ${TTAPI_FLUX_BASE_URL:-https://api.ttapi.io}
       TTAPI_OPENAI_BASE_URL: ${TTAPI_OPENAI_BASE_URL:-https://api.ttapi.org}
@@ -159,11 +171,85 @@ services:
     volumes:
       - backend_data:/app/backend/data
 
+  agent:
+    image: ${BACKEND_IMAGE}
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8010
+      APP_ALLOWED_ORIGINS: ${APP_ALLOWED_ORIGINS:-http://localhost}
+      APP_ALLOWED_ORIGIN_REGEX: ${APP_ALLOWED_ORIGIN_REGEX:-}
+      AGENT_SERVICE_ALLOWED_ORIGINS: ${AGENT_SERVICE_ALLOWED_ORIGINS:-http://localhost}
+      AGENT_LLM_BASE_URL: ${AGENT_LLM_BASE_URL:-https://api.deepseek.com}
+      AGENT_LLM_API_KEY: ${AGENT_LLM_API_KEY:-}
+      AGENT_LLM_MODEL: ${AGENT_LLM_MODEL:-deepseek-v4-flash}
+      AGENT_LLM_TIMEOUT_SECONDS: ${AGENT_LLM_TIMEOUT_SECONDS:-60}
+      AGENT_LLM_STRICT_TOOLS: ${AGENT_LLM_STRICT_TOOLS:-true}
+      AI_DEFAULT_PROVIDER: ${AI_DEFAULT_PROVIDER:-flux}
+      AI_UPSTREAM_PLATFORM: ${AI_UPSTREAM_PLATFORM:-apiyi}
+      AI_MAX_FUSION_IMAGES: ${AI_MAX_FUSION_IMAGES:-6}
+      AIAPIS_API_KEY: ${AIAPIS_API_KEY:-}
+      AIAPIS_BASE_URL: ${AIAPIS_BASE_URL:-https://img.aiapis.help/v1}
+      AIAPIS_TIMEOUT_SECONDS: ${AIAPIS_TIMEOUT_SECONDS:-300}
+      APIYI_API_KEY: ${APIYI_API_KEY:-}
+      APIYI_BASE_URL: ${APIYI_BASE_URL:-https://api.apiyi.com}
+      APIYI_OPENAI_BASE_URL: ${APIYI_OPENAI_BASE_URL:-https://api.apiyi.com/v1}
+      APIYI_GEMINI_BASE_URL: ${APIYI_GEMINI_BASE_URL:-https://api.apiyi.com/v1beta}
+      DMXAPI_API_KEY: ${DMXAPI_API_KEY:-}
+      DMXAPI_BASE_URL: ${DMXAPI_BASE_URL:-https://www.dmxapi.cn/v1}
+      DMXAPI_TIMEOUT_SECONDS: ${DMXAPI_TIMEOUT_SECONDS:-600}
+      DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
+      DB_POOL_RECYCLE_SECONDS: ${DB_POOL_RECYCLE_SECONDS:-3600}
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY}
+      AUTH_TOKEN_EXPIRE_HOURS: ${AUTH_TOKEN_EXPIRE_HOURS:-24}
+      AUTH_COOKIE_NAME: ${AUTH_COOKIE_NAME:-jinma_auth_token}
+      ROOT_USER_ID: ${ROOT_USER_ID:-00000000-0000-0000-0000-000000000001}
+      ROOT_USERNAME: ${ROOT_USERNAME:-root}
+      ROOT_DISPLAY_NAME: ${ROOT_DISPLAY_NAME:-系统管理员}
+      ROOT_EMAIL: ${ROOT_EMAIL:-root@example.com}
+      ROOT_DEFAULT_PASSWORD: ${ROOT_DEFAULT_PASSWORD:-root123456}
+      QUEUE_REDIS_URL: redis://redis:6379/0
+      QUEUE_NAME: ${QUEUE_NAME:-jinma-ai}
+      QUEUE_JOB_TIMEOUT_SECONDS: ${QUEUE_JOB_TIMEOUT_SECONDS:-900}
+      QUEUE_RESULT_TTL_SECONDS: ${QUEUE_RESULT_TTL_SECONDS:-3600}
+      QUEUE_USER_MAX_ACTIVE_JOBS: ${QUEUE_USER_MAX_ACTIVE_JOBS:-1}
+      QUEUE_ROOT_MAX_ACTIVE_JOBS: ${QUEUE_ROOT_MAX_ACTIVE_JOBS:-3}
+      CACHE_JOB_STATUS_TTL_SECONDS: ${CACHE_JOB_STATUS_TTL_SECONDS:-21600}
+      CACHE_JOB_DEDUPE_TTL_SECONDS: ${CACHE_JOB_DEDUPE_TTL_SECONDS:-120}
+      CACHE_MODEL_CATALOG_TTL_SECONDS: ${CACHE_MODEL_CATALOG_TTL_SECONDS:-300}
+      CACHE_AUTH_ME_TTL_SECONDS: ${CACHE_AUTH_ME_TTL_SECONDS:-60}
+      TZ: ${TZ:-Asia/Shanghai}
+    command:
+      - sh
+      - -lc
+      - |
+        python /app/deploy/docker/wait_for_tcp.py mysql 3306 60 &&
+        python /app/deploy/docker/wait_for_tcp.py redis 6379 60 &&
+        gunicorn agent_service.main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8010 --workers 1
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - backend_data:/app/backend/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8010/agent-health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
   nginx:
     image: ${NGINX_IMAGE}
     restart: unless-stopped
     depends_on:
       backend:
+        condition: service_healthy
+      agent:
         condition: service_healthy
     ports:
       - "${NGINX_PORT:-80}:80"

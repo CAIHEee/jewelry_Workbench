@@ -4,6 +4,7 @@ import { AppHeader } from "./components/AppHeader";
 import { Sidebar } from "./components/Sidebar";
 import { useViewport } from "./hooks/useViewport";
 import { AdminPage } from "./pages/AdminPage";
+import { AgentPage } from "./pages/AgentPage";
 import { AssetManagementPage } from "./pages/AssetManagementPage";
 import { FusionStudio } from "./pages/FusionStudio";
 import { GemstoneDesignPage } from "./pages/GemstoneDesignPage";
@@ -14,7 +15,6 @@ import { LoginPage } from "./pages/LoginPage";
 import { MultiViewPage } from "./pages/MultiViewPage";
 import { MultiViewSplitPage } from "./pages/MultiViewSplitPage";
 import { ProductRefinePage } from "./pages/ProductRefinePage";
-import { RemoveBackgroundPage } from "./pages/RemoveBackgroundPage";
 import { TextToImagePage } from "./pages/TextToImagePage";
 import { UpscaleEnhancePage } from "./pages/UpscaleEnhancePage";
 import {
@@ -56,6 +56,7 @@ import {
 
 export type AppView =
   | "text-to-image"
+  | "ai-agent"
   | "multi-view"
   | "multi-view-split"
   | "image-edit"
@@ -65,7 +66,6 @@ export type AppView =
   | "fusion"
   | "history"
   | "grayscale-relief"
-  | "remove-background"
   | "asset-management"
   | "admin";
 
@@ -73,6 +73,7 @@ const WORKSPACE_RUNS_STORAGE_KEY_PREFIX = "flux_workspace_runs_v1";
 const MAX_STORED_WORKSPACE_RUNS = 60;
 
 const viewModuleMap: Record<AppView, string | null> = {
+  "ai-agent": "ai_agent",
   "text-to-image": "text_to_image",
   "multi-view": "multi_view",
   "multi-view-split": "multi_view_split",
@@ -83,7 +84,6 @@ const viewModuleMap: Record<AppView, string | null> = {
   fusion: "multi_image_fusion",
   history: "history",
   "grayscale-relief": "grayscale_relief",
-  "remove-background": "remove_background",
   "asset-management": "asset_management",
   admin: null,
 };
@@ -276,7 +276,7 @@ function hasViewPermission(user: CurrentUser, view: AppView) {
 function firstAvailableView(user: CurrentUser): AppView {
   const ordered: AppView[] = [
     "asset-management",
-    "remove-background",
+    "ai-agent",
     "text-to-image",
     "fusion",
     "image-edit",
@@ -533,6 +533,7 @@ export default function App() {
 
   const currentViewTitle = useMemo(() => {
     const titleMap: Record<AppView, string> = {
+      "ai-agent": "AI Agent",
       "text-to-image": "文生图",
       "multi-view": "生成多视图",
       "multi-view-split": "多视图切图",
@@ -543,7 +544,6 @@ export default function App() {
       fusion: "多图融合",
       history: "历史记录",
       "grayscale-relief": "转灰度图",
-      "remove-background": "AI Agent",
       "asset-management": "资产管理",
       admin: "系统管理",
     };
@@ -629,8 +629,8 @@ export default function App() {
         <section className={activeView === "grayscale-relief" ? "view-panel active" : "view-panel hidden"}>
           <GrayscaleReliefPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} pageRuns={grayscaleRuns} onDeleteHistory={handleDeleteHistory} />
         </section>
-        <section className={activeView === "remove-background" ? "view-panel active" : "view-panel hidden"}>
-          <RemoveBackgroundPage assetItems={assetItems} />
+        <section className={activeView === "ai-agent" ? "view-panel active" : "view-panel hidden"}>
+          <AgentPage assetItems={assetItems} />
         </section>
         <section className={activeView === "fusion" ? "view-panel active" : "view-panel hidden"}>
           <FusionStudio onRecordRun={recordWorkspaceRun} assetItems={assetItems} pageRuns={fusionRuns} onDeleteHistory={handleDeleteHistory} />

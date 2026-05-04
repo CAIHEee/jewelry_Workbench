@@ -19,6 +19,7 @@ os.environ.setdefault("DATABASE_URL", f"sqlite:///{TEST_DB_PATH.as_posix()}")
 os.environ.setdefault("AUTH_SECRET_KEY", "test-secret-key")
 os.environ.setdefault("ROOT_DEFAULT_PASSWORD", "root123456")
 os.environ.setdefault("ROOT_USERNAME", "root")
+os.environ["AGENT_LLM_API_KEY"] = ""
 
 from app.main import app  # noqa: E402
 

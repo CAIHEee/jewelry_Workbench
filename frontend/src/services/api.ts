@@ -15,13 +15,32 @@ import type {
 } from "../types/fusion";
 import type { PersistedAssetItem, PersistedAssetResponse } from "../types/assets";
 import type { PersistedHistoryResponse } from "../types/history";
+import type {
+  AgentAction,
+  AgentActionConfirmResult,
+  AgentAssetRef,
+  AgentConversation,
+  AgentConversationDetail,
+  AgentDesignOption,
+  AgentDesignState,
+  AgentGenerationResultRegister,
+  AgentKnowledgeCard,
+  AgentMemoryProposal,
+  AgentMode,
+  AgentUserMemory,
+} from "../types/agent";
 import type { AssetItem } from "../types/mockData";
 import { buildGenerationJobProgress } from "../utils/jobProgress";
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL?.trim() || "/api/v1").replace(/\/$/, "");
+const AGENT_API_BASE_URL = (import.meta.env.VITE_AGENT_API_BASE_URL?.trim() || "/agent-api/v1").replace(/\/$/, "");
 
 function buildApiUrl(path: string) {
   return `${API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function buildAgentApiUrl(path: string) {
+  return `${AGENT_API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 async function apiFetch(input: string, init?: RequestInit): Promise<Response> {
@@ -222,7 +241,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-async function fetchGenerationJob(jobId: string): Promise<GenerationJobStatusResponse> {
+export async function fetchGenerationJob(jobId: string): Promise<GenerationJobStatusResponse> {
   const response = await apiFetch(buildApiUrl(`/ai/jobs/${jobId}`), { cache: "no-store" });
   return handleJsonResponse<GenerationJobStatusResponse>(response);
 }
@@ -275,6 +294,189 @@ async function waitForGenerationJobResult<T>(
   }
 
   throw new Error("任务处理超时，前端已停止轮询。请稍后到历史记录查看结果，或重新提交。");
+}
+
+export async function fetchAgentConversations(): Promise<AgentConversation[]> {
+  const response = await apiFetch(buildAgentApiUrl("/conversations"), { cache: "no-store" });
+  return handleJsonResponse<AgentConversation[]>(response);
+}
+
+export async function createAgentConversation(mode: AgentMode, title?: string): Promise<AgentConversation> {
+  const response = await apiFetch(buildAgentApiUrl("/conversations"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode, title }),
+  });
+  return handleJsonResponse<AgentConversation>(response);
+}
+
+export async function fetchAgentConversationDetail(conversationId: string): Promise<AgentConversationDetail> {
+  const response = await apiFetch(buildAgentApiUrl(`/conversations/${conversationId}`), { cache: "no-store" });
+  return handleJsonResponse<AgentConversationDetail>(response);
+}
+
+export async function deleteAgentConversation(conversationId: string): Promise<void> {
+  const response = await apiFetch(buildAgentApiUrl(`/conversations/${conversationId}`), { method: "DELETE" });
+  if (!response.ok) {
+    await throwApiError(response, "删除 Agent 对话失败");
+  }
+}
+
+interface AgentStreamHandlers {
+  onDelta?: (text: string) => void;
+  onAction?: (action: AgentAction) => void;
+  onDesignState?: (state: AgentDesignState) => void;
+  onDesignOptions?: (options: AgentDesignOption[]) => void;
+  onKnowledgeCards?: (cards: AgentKnowledgeCard[]) => void;
+  onMemoryProposal?: (proposal: AgentMemoryProposal) => void;
+  onDone?: () => void;
+  onError?: (message: string) => void;
+}
+
+export async function sendAgentMessageStream(
+  conversationId: string,
+  payload: { content: string; mode?: AgentMode; attachments?: AgentAssetRef[] },
+  handlers: AgentStreamHandlers,
+): Promise<void> {
+  const response = await apiFetch(buildAgentApiUrl(`/conversations/${conversationId}/messages/stream`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...payload, attachments: payload.attachments ?? [] }),
+  });
+  if (!response.ok || !response.body) {
+    await throwApiError(response, "Agent 回复失败");
+  }
+
+  const body = response.body;
+  if (!body) {
+    throw new Error("Agent 回复失败");
+  }
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  function handleBlock(block: string) {
+    const eventLine = block.split("\n").find((line) => line.startsWith("event:"));
+    const dataLine = block.split("\n").find((line) => line.startsWith("data:"));
+    const event = eventLine?.replace(/^event:\s*/, "").trim();
+    const rawData = dataLine?.replace(/^data:\s*/, "") ?? "{}";
+    let data: unknown = {};
+    try {
+      data = JSON.parse(rawData);
+    } catch {
+      data = {};
+    }
+    if (event === "message_delta" && data && typeof data === "object" && "text" in data) {
+      handlers.onDelta?.(String((data as { text?: unknown }).text ?? ""));
+    } else if (event === "action_card") {
+      handlers.onAction?.(data as AgentAction);
+    } else if (event === "design_state") {
+      handlers.onDesignState?.(data as AgentDesignState);
+    } else if (event === "design_options") {
+      const items = data && typeof data === "object" && Array.isArray((data as { items?: unknown }).items) ? (data as { items: AgentDesignOption[] }).items : [];
+      handlers.onDesignOptions?.(items);
+    } else if (event === "knowledge_cards") {
+      const items = data && typeof data === "object" && Array.isArray((data as { items?: unknown }).items) ? (data as { items: AgentKnowledgeCard[] }).items : [];
+      handlers.onKnowledgeCards?.(items);
+    } else if (event === "memory_proposal") {
+      handlers.onMemoryProposal?.(data as AgentMemoryProposal);
+    } else if (event === "error") {
+      const message = data && typeof data === "object" && "message" in data ? String((data as { message?: unknown }).message ?? "Agent 回复失败") : "Agent 回复失败";
+      handlers.onError?.(message);
+    } else if (event === "done") {
+      handlers.onDone?.();
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const blocks = buffer.split("\n\n");
+    buffer = blocks.pop() ?? "";
+    blocks.forEach(handleBlock);
+  }
+  if (buffer.trim()) handleBlock(buffer);
+}
+
+export async function updateAgentDesignState(
+  conversationId: string,
+  payload: { design_brief?: Record<string, unknown>; selected_knowledge_cards?: AgentKnowledgeCard[] },
+): Promise<AgentDesignState> {
+  const response = await apiFetch(buildAgentApiUrl(`/conversations/${conversationId}/design-state`), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return handleJsonResponse<AgentDesignState>(response);
+}
+
+export async function confirmAgentAction(actionId: string, payload?: {
+  prompt?: string | null;
+  params?: Record<string, unknown>;
+  source_assets?: AgentAssetRef[];
+  source_image_urls?: string[];
+}): Promise<AgentActionConfirmResult> {
+  const response = await apiFetch(buildAgentApiUrl(`/actions/${actionId}/confirm`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload ?? {}),
+  });
+  return handleJsonResponse<AgentActionConfirmResult>(response);
+}
+
+export async function registerAgentGenerationResult(
+  conversationId: string,
+  payload: AgentGenerationResultRegister,
+): Promise<AgentAssetRef> {
+  const response = await apiFetch(buildAgentApiUrl(`/conversations/${conversationId}/generation-result`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return handleJsonResponse<AgentAssetRef>(response);
+}
+
+export async function waitForAgentJobResult<T>(
+  jobId: string,
+  fallbackError: string,
+  options?: JobWaitOptions,
+): Promise<T> {
+  return waitForGenerationJobResult<T>(jobId, fallbackError, options);
+}
+
+export async function fetchAgentMemories(): Promise<AgentUserMemory[]> {
+  const response = await apiFetch(buildAgentApiUrl("/memories"), { cache: "no-store" });
+  return handleJsonResponse<AgentUserMemory[]>(response);
+}
+
+export async function createAgentMemory(payload: {
+  content: string;
+  memory_type?: string;
+  source_conversation_id?: string | null;
+}): Promise<AgentUserMemory> {
+  const response = await apiFetch(buildAgentApiUrl("/memories"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return handleJsonResponse<AgentUserMemory>(response);
+}
+
+export async function updateAgentMemory(memoryId: string, payload: { is_enabled?: boolean; content?: string }): Promise<AgentUserMemory> {
+  const response = await apiFetch(buildAgentApiUrl(`/memories/${memoryId}`), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return handleJsonResponse<AgentUserMemory>(response);
+}
+
+export async function deleteAgentMemory(memoryId: string): Promise<void> {
+  const response = await apiFetch(buildAgentApiUrl(`/memories/${memoryId}`), { method: "DELETE" });
+  if (!response.ok) {
+    await throwApiError(response, "删除记忆失败");
+  }
 }
 
 export async function login(username: string, password: string): Promise<LoginResponse> {
