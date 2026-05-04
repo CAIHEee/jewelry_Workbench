@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { FloatingToast } from "../components/FloatingToast";
 import { ResultPreviewModal } from "../components/ResultPreviewModal";
@@ -37,6 +37,12 @@ export function HistoryPage({ workspaceRuns, persistedItems, persistedError, onR
   const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   const normalizedKeyword = keyword.trim().toLowerCase();
+
+  useEffect(() => {
+    if (!toast) return;
+    const timeoutId = window.setTimeout(() => setToast(null), 2600);
+    return () => window.clearTimeout(timeoutId);
+  }, [toast]);
 
   const operationItems = useMemo(
     () =>

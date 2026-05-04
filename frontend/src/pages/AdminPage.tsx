@@ -340,8 +340,15 @@ export function AdminPage({
           >
             新增用户
           </button>
-          <button className="secondary-button compact-button" type="button" onClick={() => void handleRefresh()} disabled={loading}>
-            {loading ? "刷新中..." : "刷新列表"}
+          <button
+            className="history-icon-button refresh-icon-button"
+            type="button"
+            onClick={() => void handleRefresh()}
+            disabled={loading}
+            title={loading ? "刷新中" : "刷新列表"}
+            aria-label={loading ? "刷新中" : "刷新列表"}
+          >
+            <span aria-hidden="true">{loading ? "…" : "↻"}</span>
           </button>
         </div>
         {error ? <p className="error-text">{error}</p> : null}
