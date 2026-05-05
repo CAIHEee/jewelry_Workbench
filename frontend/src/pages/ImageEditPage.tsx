@@ -31,6 +31,7 @@ const jobProgressLabels = {
   succeeded: "已完成",
   failed: "线稿转写实图失败",
 };
+const preferredImageEditModelId = "gemini-3.1-flash-image-preview";
 
 interface ImageEditPageProps {
   assetItems: AssetItem[];
@@ -41,7 +42,11 @@ interface ImageEditPageProps {
 
 export function ImageEditPage({ assetItems, onRecordRun, pageRuns, onDeleteHistory }: ImageEditPageProps) {
   const { models, error: modelError, defaultModelId } = useModelCatalog((model) => model.supports_reference_images);
-  const [model, setModel] = useState(defaultModelId);
+  const imageEditDefaultModelId = useMemo(
+    () => models.find((item) => item.id === preferredImageEditModelId)?.id ?? defaultModelId,
+    [defaultModelId, models],
+  );
+  const [model, setModel] = useState(imageEditDefaultModelId);
   const [files, setFiles] = useState<File[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<AssetItem[]>([]);
   const [result, setResult] = useState<GenerationResult | null>(null);
@@ -54,8 +59,8 @@ export function ImageEditPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
 
   useEffect(() => {
     if (!models.length) return;
-    if (!model || !models.some((item) => item.id === model)) setModel(defaultModelId);
-  }, [defaultModelId, model, models]);
+    if (!model || !models.some((item) => item.id === model)) setModel(imageEditDefaultModelId);
+  }, [imageEditDefaultModelId, model, models]);
 
   useEffect(() => {
     if (result || selectedHistoryId || pageRuns.length === 0) {

@@ -169,6 +169,14 @@ def register_generation_result(
     )
 
 
+@app.post("/agent-api/v1/conversations/{conversation_id}/end", response_model=AgentConversationDetail)
+def end_conversation_turn(
+    conversation_id: str,
+    current_user: User = Depends(require_module("ai_agent")),
+) -> AgentConversationDetail:
+    return service.end_conversation_turn(conversation_id=conversation_id, current_user=current_user)
+
+
 @app.get("/agent-api/v1/memories", response_model=list[AgentUserMemoryResponse])
 def list_memories(current_user: User = Depends(require_module("ai_agent"))) -> list[AgentUserMemoryResponse]:
     return service.list_memories(current_user=current_user)

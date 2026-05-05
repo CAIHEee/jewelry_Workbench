@@ -322,11 +322,17 @@ export async function deleteAgentConversation(conversationId: string): Promise<v
   }
 }
 
+export async function endAgentConversationTurn(conversationId: string): Promise<AgentConversationDetail> {
+  const response = await apiFetch(buildAgentApiUrl(`/conversations/${conversationId}/end`), { method: "POST" });
+  return handleJsonResponse<AgentConversationDetail>(response);
+}
+
 interface AgentStreamHandlers {
   onDelta?: (text: string) => void;
   onAction?: (action: AgentAction) => void;
   onDesignState?: (state: AgentDesignState) => void;
-  onDesignOptions?: (options: AgentDesignOption[]) => void;
+  onDesignOptions?: (options: AgentDesignOption[], meta?: { question?: string; source?: string }) => void;
+  onOptionCardLoading?: (message: string) => void;
   onKnowledgeCards?: (cards: AgentKnowledgeCard[]) => void;
   onMemoryProposal?: (proposal: AgentMemoryProposal) => void;
   onDone?: () => void;
@@ -354,15 +360,13 @@ export async function sendAgentMessageStream(
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let currentEvent = "";
+  let currentDataLines: string[] = [];
 
-  function handleBlock(block: string) {
-    const eventLine = block.split("\n").find((line) => line.startsWith("event:"));
-    const dataLine = block.split("\n").find((line) => line.startsWith("data:"));
-    const event = eventLine?.replace(/^event:\s*/, "").trim();
-    const rawData = dataLine?.replace(/^data:\s*/, "") ?? "{}";
+  function dispatchAgentEvent(event: string | undefined, rawData: string) {
     let data: unknown = {};
     try {
-      data = JSON.parse(rawData);
+      data = JSON.parse(rawData || "{}");
     } catch {
       data = {};
     }
@@ -374,7 +378,12 @@ export async function sendAgentMessageStream(
       handlers.onDesignState?.(data as AgentDesignState);
     } else if (event === "design_options") {
       const items = data && typeof data === "object" && Array.isArray((data as { items?: unknown }).items) ? (data as { items: AgentDesignOption[] }).items : [];
-      handlers.onDesignOptions?.(items);
+      const question = data && typeof data === "object" && "question" in data ? String((data as { question?: unknown }).question ?? "") : "";
+      const source = data && typeof data === "object" && "source" in data ? String((data as { source?: unknown }).source ?? "") : "";
+      handlers.onDesignOptions?.(items, { question, source });
+    } else if (event === "option_card_loading") {
+      const message = data && typeof data === "object" && "message" in data ? String((data as { message?: unknown }).message ?? "正在生成选项卡") : "正在生成选项卡";
+      handlers.onOptionCardLoading?.(message);
     } else if (event === "knowledge_cards") {
       const items = data && typeof data === "object" && Array.isArray((data as { items?: unknown }).items) ? (data as { items: AgentKnowledgeCard[] }).items : [];
       handlers.onKnowledgeCards?.(items);
@@ -388,15 +397,55 @@ export async function sendAgentMessageStream(
     }
   }
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const blocks = buffer.split("\n\n");
-    buffer = blocks.pop() ?? "";
-    blocks.forEach(handleBlock);
+  function flushCurrentEvent() {
+    if (!currentEvent && currentDataLines.length === 0) {
+      return;
+    }
+    dispatchAgentEvent(currentEvent || "message", currentDataLines.join("\n"));
+    currentEvent = "";
+    currentDataLines = [];
   }
-  if (buffer.trim()) handleBlock(buffer);
+
+  function handleSseLine(rawLine: string) {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (line === "") {
+      flushCurrentEvent();
+      return;
+    }
+    if (line.startsWith(":")) {
+      return;
+    }
+    const separatorIndex = line.indexOf(":");
+    const field = separatorIndex >= 0 ? line.slice(0, separatorIndex) : line;
+    let value = separatorIndex >= 0 ? line.slice(separatorIndex + 1) : "";
+    if (value.startsWith(" ")) {
+      value = value.slice(1);
+    }
+    if (field === "event") {
+      currentEvent = value;
+    } else if (field === "data") {
+      currentDataLines.push(value);
+    }
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      lines.forEach(handleSseLine);
+    }
+    buffer += decoder.decode();
+    if (buffer) {
+      buffer.split("\n").forEach(handleSseLine);
+      buffer = "";
+    }
+    flushCurrentEvent();
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 export async function updateAgentDesignState(

@@ -4,6 +4,7 @@ import { AutoResizeTextarea } from "./AutoResizeTextarea";
 import { AssetSourcePicker } from "./AssetSourcePicker";
 import { FloatingToast } from "./FloatingToast";
 import { GenerationProgress } from "./GenerationProgress";
+import { LocalImageMarkupEditor } from "./LocalImageMarkupEditor";
 import { PageGenerationHistory } from "./PageGenerationHistory";
 import { PromptTemplateImporter } from "./PromptTemplateImporter";
 import { ResultPreviewModal } from "./ResultPreviewModal";
@@ -47,6 +48,8 @@ interface ReferenceTransformModulePageProps {
   progressPhases?: GenerationProgressPhase[];
   successLabel?: string;
   errorProgressLabel?: string;
+  enableLocalMarkup?: boolean;
+  preferredModelId?: string;
 }
 
 export function ReferenceTransformModulePage({
@@ -78,14 +81,20 @@ export function ReferenceTransformModulePage({
   progressPhases,
   successLabel = "已完成",
   errorProgressLabel = "生成失败",
+  enableLocalMarkup = false,
+  preferredModelId,
 }: ReferenceTransformModulePageProps) {
   const templates = getPromptTemplatesByModule(module);
   const initialPrompt = hidePromptEditor
     ? (defaultPrompt ?? "")
     : (defaultPrompt !== undefined ? defaultPrompt : (templates[0]?.content ?? ""));
   const { models, error: modelError, defaultModelId } = useModelCatalog((model) => model.supports_reference_images);
+  const resolvedDefaultModelId = useMemo(
+    () => models.find((item) => item.id === preferredModelId)?.id ?? defaultModelId,
+    [defaultModelId, models, preferredModelId],
+  );
   const [prompt, setPrompt] = useState(initialPrompt);
-  const [model, setModel] = useState(defaultModelId);
+  const [model, setModel] = useState(resolvedDefaultModelId);
   const [files, setFiles] = useState<File[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<AssetItem[]>([]);
   const [result, setResult] = useState<GenerationResult | null>(null);
@@ -95,11 +104,13 @@ export function ReferenceTransformModulePage({
   const [error, setError] = useState<string | null>(null);
   const [progressState, setProgressState] = useState<"idle" | "running" | "success" | "error">("idle");
   const [jobProgress, setJobProgress] = useState<GenerationJobProgress | null>(null);
+  const [markupFile, setMarkupFile] = useState<File | null>(null);
+  const [markupPreviewUrl, setMarkupPreviewUrl] = useState<string | null>(null);
 
   useEffect(() => {
     if (!models.length) return;
-    if (!model || !models.some((item) => item.id === model)) setModel(defaultModelId);
-  }, [defaultModelId, model, models]);
+    if (!model || !models.some((item) => item.id === model)) setModel(resolvedDefaultModelId);
+  }, [model, models, resolvedDefaultModelId]);
 
   useEffect(() => {
     if (result || selectedHistoryId || pageRuns.length === 0) return;
@@ -120,14 +131,21 @@ export function ReferenceTransformModulePage({
     if (historySourceImage && historySourceImage !== previewResultUrl) {
       return historySourceImage;
     }
-    return uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? null;
-  }, [activeHistory, previewResultUrl, selectedAssets, uploadedPreviewUrl]);
+    return markupPreviewUrl ?? uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? null;
+  }, [activeHistory, markupPreviewUrl, previewResultUrl, selectedAssets, uploadedPreviewUrl]);
+  const editableSourceUrl = uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? selectedAssets[0]?.fileUrl ?? null;
+  const editableSourceName = files[0]?.name ?? selectedAssets[0]?.name ?? null;
 
   useEffect(() => {
     return () => {
       if (uploadedPreviewUrl) URL.revokeObjectURL(uploadedPreviewUrl);
     };
   }, [uploadedPreviewUrl]);
+
+  useEffect(() => {
+    setMarkupFile(null);
+    setMarkupPreviewUrl(null);
+  }, [uploadedPreviewUrl, selectedAssets]);
 
   async function handleSubmit() {
     if (loading) {
@@ -151,21 +169,27 @@ export function ReferenceTransformModulePage({
     setProgressState("running");
     setJobProgress({ percent: 18, label: `${pageTitle}任务排队中...` });
     try {
-      const selectedAssetUrls = selectedAssets
-        .map((asset) => asset.fileUrl ?? asset.previewUrl ?? asset.storageUrl ?? null)
-        .filter((url): url is string => Boolean(url));
-      const selectedAssetNames = selectedAssets.map((asset) => asset.name);
-      const inputFiles = allowMultipleSources ? files : files.slice(0, 1);
+      const selectedAssetRefs = selectedAssets
+        .map((asset) => ({
+          url: asset.fileUrl ?? asset.previewUrl ?? asset.storageUrl ?? null,
+          name: asset.name,
+        }))
+        .filter((item): item is { url: string; name: string } => Boolean(item.url));
+      const selectedAssetUrls = selectedAssetRefs.map((item) => item.url);
+      const selectedAssetNames = selectedAssetRefs.map((item) => item.name);
+      const inputFiles = buildInputFilesForSubmit();
+      const sourceUrlsForSubmit = buildSourceUrlsForSubmit(selectedAssetUrls);
+      const sourceNamesForSubmit = buildSourceNamesForSubmit(selectedAssetNames);
       const selectedAsset = selectedAssets[0] ?? null;
       const selectedAssetUrl = selectedAssetUrls[0] ?? null;
       const inputFile = inputFiles[0] ?? null;
-      if (inputFiles.length === 0 && selectedAssetUrls.length === 0) throw new Error("未获取到可用参考图");
+      if (inputFiles.length === 0 && sourceUrlsForSubmit.length === 0 && selectedAssetUrls.length === 0) throw new Error("未获取到可用参考图");
 
       const response = await submitReferenceModuleTransform(endpointPath, {
         files: allowMultipleSources ? inputFiles : undefined,
         file: allowMultipleSources ? undefined : inputFile,
-        sourceImageUrls: allowMultipleSources && inputFiles.length === 0 ? selectedAssetUrls : undefined,
-        sourceImageNames: allowMultipleSources && inputFiles.length === 0 ? selectedAssetNames : undefined,
+        sourceImageUrls: allowMultipleSources ? sourceUrlsForSubmit : undefined,
+        sourceImageNames: allowMultipleSources ? sourceNamesForSubmit : undefined,
         sourceImageUrl: !allowMultipleSources && !inputFile ? selectedAssetUrl ?? undefined : undefined,
         sourceImageName: !allowMultipleSources && !inputFile ? selectedAsset?.name : undefined,
         model: selectedModel.id,
@@ -200,10 +224,12 @@ export function ReferenceTransformModulePage({
         sourceImageUrl: response.source_image_url ?? uploadedPreviewUrl ?? selectedAssetUrls[0] ?? null,
         sourceImages:
           inputFiles.length > 0
-            ? uploadedPreviewUrl
-              ? [uploadedPreviewUrl]
+            ? (markupPreviewUrl ?? uploadedPreviewUrl)
+              ? [markupPreviewUrl ?? uploadedPreviewUrl ?? ""]
               : []
-            : selectedAssetUrls,
+            : sourceUrlsForSubmit.length
+              ? sourceUrlsForSubmit
+              : selectedAssetUrls,
         prompt: prompt.trim(),
       });
       setJobProgress({ percent: 100, label: "已完成" });
@@ -220,6 +246,26 @@ export function ReferenceTransformModulePage({
     }
 
     setLoading(false);
+  }
+
+  function buildInputFilesForSubmit() {
+    if (markupFile) {
+      if (!allowMultipleSources) return [markupFile];
+      return [markupFile, ...files.slice(1)];
+    }
+    return allowMultipleSources ? files : files.slice(0, 1);
+  }
+
+  function buildSourceUrlsForSubmit(selectedAssetUrls: string[]) {
+    if (!allowMultipleSources) return [];
+    if (!markupFile) return selectedAssetUrls;
+    return files.length > 0 ? selectedAssetUrls : selectedAssetUrls.slice(1);
+  }
+
+  function buildSourceNamesForSubmit(selectedAssetNames: string[]) {
+    if (!allowMultipleSources) return [];
+    if (!markupFile) return selectedAssetNames;
+    return files.length > 0 ? selectedAssetNames : selectedAssetNames.slice(1);
   }
 
   return (
@@ -250,6 +296,18 @@ export function ReferenceTransformModulePage({
               onUploadFilesChange={setFiles}
               onSelectedAssetsChange={setSelectedAssets}
             />
+
+            {enableLocalMarkup ? (
+              <LocalImageMarkupEditor
+                sourceUrl={editableSourceUrl}
+                sourceName={editableSourceName}
+                disabled={loading}
+                onEditedFileChange={(file, previewUrl) => {
+                  setMarkupFile(file);
+                  setMarkupPreviewUrl(previewUrl);
+                }}
+              />
+            ) : null}
 
             {!hidePromptEditor ? (
               <label className="input-group prompt-input-group compact-prompt-group">

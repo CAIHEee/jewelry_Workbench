@@ -38,6 +38,38 @@ def test_agent_conversation_stream_creates_draft_action(auth_client: TestClient,
     assert body["actions"][0]["module_key"] == "text_to_image"
 
 
+def test_design_stream_uses_visible_llm_delta(auth_client: TestClient, monkeypatch) -> None:
+    async def fake_design_result(self, *, conversation, current_user, content, attachments):  # noqa: ANN001, ARG001
+        return {
+            "reply": "最终规划回复不应该覆盖流式正文。",
+            "design_state": {"design_brief": {}, "selected_knowledge_cards": [], "knowledge_cards": []},
+            "knowledge_cards": [],
+            "design_options": [],
+        }
+
+    async def fake_visible_stream(self, *, conversation, content, attachments):  # noqa: ANN001, ARG001
+        yield "这是"
+        yield "流式正文。"
+
+    monkeypatch.setattr(AgentService, "_design_agent_result", fake_design_result)
+    monkeypatch.setattr(AgentService, "_stream_design_visible_reply", fake_visible_stream)
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "design"})
+    conversation_id = created.json()["id"]
+
+    response = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={"content": "你好", "attachments": []},
+    )
+
+    assert response.status_code == 200
+    assert "这是" in response.text
+    assert "流式正文。" in response.text
+    assert "最终规划回复不应该覆盖流式正文。" in response.text
+    detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
+    assert detail["messages"][-1]["content"] == "最终规划回复不应该覆盖流式正文。"
+
+
 def test_agent_memory_crud(auth_client: TestClient) -> None:
     agent_client = _agent_client(auth_client)
     created = agent_client.post(
@@ -53,6 +85,27 @@ def test_agent_memory_crud(auth_client: TestClient) -> None:
 
     deleted = agent_client.delete(f"/agent-api/v1/memories/{memory_id}")
     assert deleted.status_code == 204
+
+
+def test_agent_end_conversation_does_not_call_llm(auth_client: TestClient, monkeypatch) -> None:
+    async def fail_if_llm_called(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("Ending a conversation should not call the LLM.")
+
+    monkeypatch.setattr(AgentService, "_call_llm_or_fallback", fail_if_llm_called)
+    monkeypatch.setattr(AgentService, "_call_design_brief_llm", fail_if_llm_called)
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "design"})
+    conversation_id = created.json()["id"]
+
+    response = agent_client.post(f"/agent-api/v1/conversations/{conversation_id}/end")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["messages"][-2]["role"] == "user"
+    assert body["messages"][-2]["content"] == "结束对话"
+    assert body["messages"][-1]["role"] == "assistant"
+    assert "已结束" in body["messages"][-1]["content"]
+    assert body["conversation"]["current_stage"] == "ended"
 
 
 def test_design_mode_with_gemstone_image_creates_gemstone_action_and_state(auth_client: TestClient) -> None:
@@ -206,6 +259,8 @@ def test_design_generation_prompt_is_summarized_by_llm(auth_client: TestClient, 
     detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
     prompt = detail["actions"][0]["prompt"]
     assert "以参考裸石为核心" in prompt
+    assert "完整的珠宝设计正视图" in prompt
+    assert "不裁切" in prompt
     assert "专业参考：" not in prompt
     assert "当前 brief" not in prompt
 

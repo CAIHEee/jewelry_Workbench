@@ -31,7 +31,7 @@ const progressPhases = [
   { at: 74, label: "生成多角度视图中..." },
   { at: 95, label: "拼合四宫格结果..." },
 ];
-const preferredMultiViewModelId = "gpt-image-2-aiapis";
+const preferredMultiViewModelId = "gpt-image-2-all-apiyi";
 const jobProgressLabels = {
   queued: "多视图任务排队中...",
   running: "生成多角度视图中...",

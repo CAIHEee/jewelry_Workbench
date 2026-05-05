@@ -1,6 +1,8 @@
 import asyncio
 import base64
+import binascii
 import json
+import re
 import subprocess
 import tempfile
 from contextvars import ContextVar, Token
@@ -55,6 +57,17 @@ class TTAPIModelConfig:
 
 
 MODEL_CATALOG: dict[str, TTAPIModelConfig] = {
+    "gpt-image-2-all-apiyi": TTAPIModelConfig(
+        id="gpt-image-2-all-apiyi",
+        label="APIYI · GPT Image 2 All",
+        provider=ProviderType.apiyi,
+        category="image_generation",
+        upstream_model_id="gpt-image-2-all",
+        supports_text_to_image=True,
+        supports_multi_image_fusion=True,
+        supports_reference_images=True,
+        pricing_hint="GPT Image 2 All via APIYI chat completions",
+    ),
     "gpt-image-2-aiapis": TTAPIModelConfig(
         id="gpt-image-2-aiapis",
         label="AIAPIS · GPT Image 2",
@@ -179,6 +192,8 @@ class AIService:
 
             if model.provider == ProviderType.aiapis:
                 return await self._generate_with_aiapis_gpt_image2(request=request, model=model)
+            if model.provider == ProviderType.apiyi:
+                return await self._generate_with_apiyi_gpt_image2_all(request=request, model=model)
             if model.provider == ProviderType.wuyin:
                 return await self._generate_with_wuyin_gpt_image2(request=request, model=model)
 
@@ -261,6 +276,8 @@ class AIService:
 
             if model.provider == ProviderType.aiapis:
                 result = await self._fuse_with_aiapis_gpt_image2(files=submit_files, metadata=metadata, model=model)
+            elif model.provider == ProviderType.apiyi:
+                result = await self._fuse_with_apiyi_gpt_image2_all(files=submit_files, metadata=metadata, model=model)
             elif model.provider == ProviderType.dmxapi:
                 result = await self._fuse_with_dmxapi_gpt_image2(files=submit_files, metadata=metadata, model=model)
             elif model.provider == ProviderType.wuyin:
@@ -409,6 +426,8 @@ class AIService:
 
             if model.provider == ProviderType.aiapis:
                 return await self._transform_with_aiapis_gpt_image2(files=submit_files, metadata=metadata, model=model)
+            if model.provider == ProviderType.apiyi:
+                return await self._transform_with_apiyi_gpt_image2_all(files=submit_files, metadata=metadata, model=model)
             if model.provider == ProviderType.dmxapi:
                 return await self._transform_with_dmxapi_gpt_image2(files=submit_files, metadata=metadata, model=model)
             if model.provider == ProviderType.wuyin:
@@ -583,6 +602,8 @@ class AIService:
         return "APIYI" if self._use_apiyi() else "TTAPI"
 
     def _build_model_pricing_hint(self, model: TTAPIModelConfig, platform_label: str) -> str:
+        if model.provider == ProviderType.apiyi:
+            return "GPT Image 2 All via APIYI chat completions"
         if model.provider == ProviderType.aiapis:
             return "GPT Image 2 generation via AIAPIS relay"
         if model.provider == ProviderType.wuyin:
@@ -592,6 +613,54 @@ class AIService:
         if model.id == "gemini-3.1-flash-image-preview":
             return f"Nano Banana 2 image generation via {platform_label}"
         return f"{model.label} via {platform_label}"
+
+    async def _generate_with_apiyi_gpt_image2_all(
+        self,
+        *,
+        request: TextToImageRequest,
+        model: TTAPIModelConfig,
+    ) -> GenerationResult:
+        data = await self._post_apiyi_gpt_image2_chat(
+            model=model,
+            prompt=request.prompt,
+            files=[],
+        )
+        upstream_image_url = self._extract_chat_completion_image_url(data)
+        stored_asset = await self._store_generated_asset(
+            image_url=upstream_image_url,
+            kind="text_to_image",
+            model=model.id,
+        )
+        result = GenerationResult(
+            job_id=self._extract_job_id(data),
+            status="completed" if stored_asset["access_url"] else "failed",
+            provider=model.provider,
+            model=model.id,
+            image_url=stored_asset["access_url"],
+            message="Image generation completed." if stored_asset["access_url"] else "Image generation returned no asset.",
+            raw_response=data,
+        )
+        if result.image_url:
+            self._persist_history(
+                kind="text_to_image",
+                title=self._history_title_for_kind("text_to_image"),
+                model_id=model.id,
+                provider=model.provider.value,
+                status=result.status,
+                prompt=request.prompt,
+                job_id=result.job_id,
+                image_url=result.image_url,
+                storage_url=stored_asset["storage_url"],
+                metadata={
+                    "upstream_platform": "apiyi",
+                    "upstream_api": "chat_completions",
+                    "upstream_model": model.upstream_model_id,
+                    "aspect_ratio": request.aspect_ratio,
+                    "size": request.size,
+                    **stored_asset["metadata"],
+                },
+            )
+        return result
 
     async def _generate_with_wuyin_gpt_image2(
         self,
@@ -836,6 +905,54 @@ class AIService:
         )
         return result
 
+    async def _fuse_with_apiyi_gpt_image2_all(
+        self,
+        *,
+        files: list[UploadFile],
+        metadata: FusionRequestMetadata,
+        model: TTAPIModelConfig,
+    ) -> GenerationResult:
+        prompt = self._build_fusion_prompt(metadata)
+        data = await self._post_apiyi_gpt_image2_chat(model=model, prompt=prompt, files=files)
+        upstream_image_url = self._extract_chat_completion_image_url(data)
+        stored_asset = await self._store_generated_asset(
+            image_url=upstream_image_url,
+            kind="fusion",
+            model=model.id,
+            preferred_name=self._preferred_fusion_asset_name(metadata),
+        )
+        result = GenerationResult(
+            job_id=self._extract_job_id(data),
+            status="completed" if stored_asset["access_url"] else "failed",
+            provider=model.provider,
+            model=model.id,
+            image_url=stored_asset["access_url"],
+            message="Fusion generation completed." if stored_asset["access_url"] else "Fusion returned no asset.",
+            raw_response=data,
+        )
+        if result.image_url:
+            self._persist_history(
+                kind="fusion",
+                title=self._history_title_for_kind("fusion"),
+                model_id=model.id,
+                provider=model.provider.value,
+                status=result.status,
+                prompt=metadata.prompt,
+                job_id=result.job_id,
+                image_url=result.image_url,
+                storage_url=stored_asset["storage_url"],
+                metadata={
+                    "upstream_platform": "apiyi",
+                    "upstream_api": "chat_completions",
+                    "upstream_model": model.upstream_model_id,
+                    **self._build_fusion_history_metadata(metadata),
+                    "negative_prompt": metadata.negative_prompt,
+                    "strength": metadata.strength,
+                    **stored_asset["metadata"],
+                },
+            )
+        return result
+
     async def _fuse_with_dmxapi_gpt_image2(
         self,
         *,
@@ -1014,6 +1131,51 @@ class AIService:
                 **self._build_reference_history_metadata(metadata),
             },
         )
+        return result
+
+    async def _transform_with_apiyi_gpt_image2_all(
+        self,
+        *,
+        files: list[UploadFile],
+        metadata: ReferenceImageRequestMetadata,
+        model: TTAPIModelConfig,
+    ) -> GenerationResult:
+        data = await self._post_apiyi_gpt_image2_chat(model=model, prompt=metadata.prompt, files=files)
+        upstream_image_url = self._extract_chat_completion_image_url(data)
+        stored_asset = await self._store_generated_asset(
+            image_url=upstream_image_url,
+            kind=metadata.feature,
+            model=model.id,
+            preferred_name=metadata.filename,
+        )
+        result = GenerationResult(
+            job_id=self._extract_job_id(data),
+            status="completed" if stored_asset["access_url"] else "failed",
+            provider=model.provider,
+            model=model.id,
+            image_url=stored_asset["access_url"],
+            message="Reference image transform completed." if stored_asset["access_url"] else "Reference image transform returned no asset.",
+            raw_response=data,
+        ).model_copy(update=self._build_reference_result_update(metadata))
+        if result.image_url:
+            self._persist_history(
+                kind=self._map_feature_to_history_kind(metadata.feature),
+                title=self._feature_title(metadata.feature, model.label),
+                model_id=model.id,
+                provider=model.provider.value,
+                status=result.status,
+                prompt=metadata.prompt,
+                job_id=result.job_id,
+                image_url=result.image_url,
+                storage_url=stored_asset["storage_url"],
+                metadata={
+                    "upstream_platform": "apiyi",
+                    "upstream_api": "chat_completions",
+                    "upstream_model": model.upstream_model_id,
+                    **stored_asset["metadata"],
+                    **self._build_reference_history_metadata(metadata),
+                },
+            )
         return result
 
     async def _transform_with_dmxapi_gpt_image2(
@@ -1846,6 +2008,42 @@ class AIService:
             )
         return self._handle_response(response)
 
+    async def _post_apiyi_gpt_image2_chat(
+        self,
+        *,
+        model: TTAPIModelConfig,
+        prompt: str,
+        files: list[UploadFile],
+    ) -> dict[str, Any]:
+        content: str | list[dict[str, Any]]
+        if files:
+            content_parts: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+            for file in files:
+                content_parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": await self._file_to_data_url(file)},
+                    }
+                )
+            content = content_parts
+        else:
+            content = prompt
+
+        return await self._post_json_with_bearer(
+            base_url=self.settings.apiyi_openai_base_url,
+            path="/chat/completions",
+            api_key=self._require_apiyi_api_key(),
+            payload={
+                "model": model.upstream_model_id,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": content,
+                    }
+                ],
+            },
+        )
+
     async def _post_json_with_bearer_base_url(
         self,
         *,
@@ -2221,6 +2419,47 @@ class AIService:
                     value = item.get("url")
                     if isinstance(value, str):
                         return value
+        return None
+
+    def _extract_chat_completion_image_url(self, data: dict[str, Any]) -> str | None:
+        content = self._extract_chat_completion_content(data)
+        if not content:
+            return self._extract_image_url(data)
+
+        markdown_match = re.search(r"!\[[^\]]*]\((?P<url>[^)]+)\)", content)
+        if markdown_match:
+            return markdown_match.group("url").strip()
+
+        url_match = re.search(r"(https?://[^\s)'\"<>]+|data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+)", content)
+        if url_match:
+            return url_match.group(1).strip()
+
+        return self._extract_image_url(data)
+
+    def _extract_chat_completion_content(self, data: dict[str, Any]) -> str | None:
+        choices = data.get("choices")
+        if not isinstance(choices, list):
+            return None
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            message = choice.get("message")
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+            if isinstance(content, list):
+                fragments: list[str] = []
+                for item in content:
+                    if isinstance(item, str):
+                        fragments.append(item)
+                    elif isinstance(item, dict):
+                        text = item.get("text") or item.get("content")
+                        if isinstance(text, str):
+                            fragments.append(text)
+                if fragments:
+                    return "\n".join(fragments).strip()
         return None
 
     def _extract_wuyin_image_urls(self, data: dict[str, Any]) -> list[str]:
@@ -2828,6 +3067,17 @@ class AIService:
         return stored_items
 
     async def _download_image(self, image_url: str) -> tuple[bytes, str]:
+        if image_url.startswith("data:image/"):
+            header, _, encoded = image_url.partition(",")
+            content_type = header.removeprefix("data:").split(";", 1)[0] or "image/png"
+            try:
+                return base64.b64decode(encoded), content_type
+            except (binascii.Error, ValueError) as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Invalid base64 image data returned by upstream.",
+                ) from exc
+
         if image_url.startswith(("local://", "oss://", "/api/v1/assets/")):
             self.asset_service.ensure_storage_url_access(storage_url=image_url, current_user=self._require_request_user())
             content, content_type, _ = self.asset_service.fetch_asset_bytes(image_url)

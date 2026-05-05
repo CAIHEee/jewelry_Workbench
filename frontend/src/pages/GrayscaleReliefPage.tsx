@@ -24,7 +24,7 @@ const progressPhases = [
   { at: 76, label: "生成灰阶泥模质感..." },
   { at: 95, label: "整理灰度结果..." },
 ];
-const preferredGrayscaleModelId = "gpt-image-2-aiapis";
+const preferredGrayscaleModelId = "gpt-image-2-all-apiyi";
 const jobProgressLabels = {
   queued: "灰度转换任务排队中...",
   running: "生成灰阶泥模质感...",

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchModelCatalog } from "../services/api";
 import type { ModelDefinition } from "../types/fusion";
 
-const DEFAULT_MODEL_ID = "gemini-3.1-flash-image-preview";
+const DEFAULT_MODEL_ID = "gpt-image-2-all-apiyi";
 
 export function useModelCatalog(filterFn?: (model: ModelDefinition) => boolean) {
   const [models, setModels] = useState<ModelDefinition[]>([]);

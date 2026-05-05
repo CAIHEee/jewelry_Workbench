@@ -13,6 +13,7 @@ class FusionMode(str, Enum):
 class ProviderType(str, Enum):
     flux = "flux"
     gemini = "gemini"
+    apiyi = "apiyi"
     wuyin = "wuyin"
     aiapis = "aiapis"
     dmxapi = "dmxapi"

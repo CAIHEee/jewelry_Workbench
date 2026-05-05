@@ -106,4 +106,6 @@ export interface AgentDesignState {
   knowledge_cards: AgentKnowledgeCard[];
   latest_design_mode?: "text_to_image" | "gemstone_design";
   pending_design_options?: AgentDesignOption[];
+  pending_design_question?: string | null;
+  pending_design_option_source?: "llm" | "fallback" | "none" | string;
 }

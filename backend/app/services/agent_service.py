@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
@@ -32,8 +33,12 @@ from app.services.asset_service import AssetService
 from app.services.job_queue_service import JobQueueService
 
 
-DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
+DEFAULT_IMAGE_MODEL = "gpt-image-2-all-apiyi"
 DEFAULT_TEXT_TO_IMAGE_PROMPT_SUFFIX = "高级珠宝产品渲染效果，背景干净，金属光泽真实，工艺细节清晰。"
+DESIGN_FRONT_VIEW_CONSTRAINT = (
+    "必须生成完整的珠宝设计正视图，主体珠宝完整入画、居中展示，不裁切、不只展示局部特写，"
+    "正面视角或近似正交正视图，完整呈现整体轮廓、结构比例、主石位置、镶嵌结构和全部关键设计细节。"
+)
 DEFAULT_GEMSTONE_DESIGN_PROMPT = (
     "以参考图中的裸石/玉石为核心进行镶嵌珠宝设计，不改变裸石原始形状、颜色、大小比例与天然纹理。"
     "根据裸石形态设计合理镶口与结构，可采用18K金、爪镶、包镶、围钻、花丝、镂空或对称布局，"
@@ -344,18 +349,52 @@ class AgentService:
         memories = self.list_memories(current_user=current_user, enabled_only=True)
         if conversation.mode == "design":
             design_attachments = normalized_attachments or self._load_design_source_assets(conversation)
-            design_result = await self._design_agent_result(
+            design_task = asyncio.create_task(self._design_agent_result(
                 conversation=conversation,
                 current_user=current_user,
                 content=content,
                 attachments=design_attachments,
-            )
-            for chunk in self._chunk_text(str(design_result["reply"])):
-                yield ("message_delta", {"text": chunk})
+            ))
+            streamed_reply = ""
+            stream_buffer = ""
+            try:
+                async for delta in self._stream_design_visible_reply(
+                    conversation=conversation,
+                    content=content,
+                    attachments=design_attachments,
+                ):
+                    streamed_reply += delta
+                    stream_buffer += delta
+                    chunks, stream_buffer = self._drain_stream_text_buffer(stream_buffer)
+                    for chunk in chunks:
+                        yield ("message_delta", {"text": chunk})
+            except Exception:  # noqa: BLE001
+                streamed_reply = ""
+                stream_buffer = ""
+            if stream_buffer:
+                chunks, stream_buffer = self._drain_stream_text_buffer(stream_buffer, final=True)
+                for chunk in chunks:
+                    yield ("message_delta", {"text": chunk})
+            if not design_task.done():
+                yield ("option_card_loading", {"message": "正在生成选项卡"})
+            design_result = await design_task
+            if streamed_reply.strip():
+                for chunk in self._chunk_text(f"\n{design_result['reply']}"):
+                    yield ("message_delta", {"text": chunk})
+            else:
+                for chunk in self._chunk_text(str(design_result["reply"])):
+                    yield ("message_delta", {"text": chunk})
             yield ("design_state", design_result["design_state"])
             yield ("knowledge_cards", {"items": design_result["knowledge_cards"]})
             if design_result.get("design_options"):
-                yield ("design_options", {"items": design_result["design_options"]})
+                yield (
+                    "design_options",
+                    {
+                        "items": design_result["design_options"],
+                        "question": design_result.get("design_question") or design_result.get("reply") or "请选择一个方向",
+                        "source": design_result.get("design_option_source") or "llm",
+                    },
+                )
             action_response = None
             action_card = design_result.get("action_card")
             if action_card:
@@ -419,6 +458,7 @@ class AgentService:
 
         llm_result: dict[str, Any] | None = None
         streamed_text = ""
+        stream_buffer = ""
         try:
             async for delta in self._stream_llm_response(
                 conversation=conversation,
@@ -428,7 +468,10 @@ class AgentService:
             ):
                 if isinstance(delta, str):
                     streamed_text += delta
-                    yield ("message_delta", {"text": delta})
+                    stream_buffer += delta
+                    chunks, stream_buffer = self._drain_stream_text_buffer(stream_buffer)
+                    for chunk in chunks:
+                        yield ("message_delta", {"text": chunk})
                 else:
                     llm_result = delta
         except Exception:  # noqa: BLE001
@@ -436,6 +479,11 @@ class AgentService:
                 llm_result = {"reply": streamed_text}
             else:
                 llm_result = self._heuristic_agent_result(conversation.mode, content, active_attachments)
+
+        if stream_buffer:
+            chunks, stream_buffer = self._drain_stream_text_buffer(stream_buffer, final=True)
+            for chunk in chunks:
+                yield ("message_delta", {"text": chunk})
 
         if llm_result is None:
             llm_result = {"reply": streamed_text}
@@ -651,6 +699,42 @@ class AgentService:
         )
         return result_ref
 
+    def end_conversation_turn(self, *, conversation_id: str, current_user: User) -> AgentConversationDetail:
+        conversation = self._get_conversation(conversation_id, current_user=current_user)
+        reply = "好的，本次对话已结束。需要继续时，可以直接发送新的需求。"
+        self._create_message(
+            conversation_id=conversation.id,
+            current_user=current_user,
+            role="user",
+            content="结束对话",
+            attachments=[],
+        )
+        self._create_message(
+            conversation_id=conversation.id,
+            current_user=current_user,
+            role="assistant",
+            content=reply,
+            attachments=[],
+            event={"type": "conversation_ended"},
+        )
+        with SessionLocal() as session:
+            record = session.get(AgentConversation, conversation.id)
+            if record is not None:
+                state = self._load_json(record.state_json) or {}
+                for key in (
+                    "pending_design_options",
+                    "pending_design_question",
+                    "pending_design_option_source",
+                    "pending_design_slot",
+                ):
+                    state.pop(key, None)
+                record.state_json = self._dump_json(state)
+                record.summary = self._build_summary(record.summary, "结束对话")
+                record.current_stage = "ended"
+                record.updated_at = datetime.now(timezone.utc)
+                session.commit()
+        return self.get_conversation_detail(conversation_id=conversation.id, current_user=current_user)
+
     async def _call_llm_or_fallback(
         self,
         *,
@@ -732,8 +816,8 @@ class AgentService:
                     except json.JSONDecodeError:
                         continue
                     delta = ((body.get("choices") or [{}])[0].get("delta") or {})
-                    text = delta.get("content")
-                    if isinstance(text, str) and text:
+                    text = self._extract_stream_delta_text(body)
+                    if text:
                         reply_parts.append(text)
                         yield text
                     function_call = delta.get("function_call")
@@ -937,8 +1021,12 @@ class AgentService:
             design_options = []
         if should_generate:
             design_options = []
+            option_source = "none"
         elif not design_options:
+            option_source = "fallback"
             design_options = self._fallback_design_options(next_slot)
+        else:
+            option_source = "llm"
         state["design_brief"] = brief
         state["stone_analysis"] = stone_analysis
         state["knowledge_cards"] = knowledge_cards
@@ -946,6 +1034,8 @@ class AgentService:
         state["latest_design_mode"] = "gemstone_design" if state.get("design_source_assets") else "text_to_image"
         state["pending_design_slot"] = next_slot if next_slot in {"category", "concept", "gemstone", "metal", "style", "craft", "scene"} and not should_generate else None
         state["pending_design_options"] = design_options
+        state["pending_design_question"] = reply if design_options else None
+        state["pending_design_option_source"] = option_source
         self._save_conversation_state(conversation.id, state)
 
         result: dict[str, Any] = {
@@ -953,6 +1043,8 @@ class AgentService:
             "design_state": self._build_design_state_payload(state),
             "knowledge_cards": knowledge_cards,
             "design_options": design_options,
+            "design_question": reply,
+            "design_option_source": option_source,
         }
         if should_generate:
             selected_for_prompt = selected_cards or knowledge_cards[:4]
@@ -1008,6 +1100,8 @@ class AgentService:
             "knowledge_cards": state.get("knowledge_cards") or [],
             "latest_design_mode": state.get("latest_design_mode") or "text_to_image",
             "pending_design_options": state.get("pending_design_options") or [],
+            "pending_design_question": state.get("pending_design_question"),
+            "pending_design_option_source": state.get("pending_design_option_source") or "llm",
         }
 
     async def _call_design_brief_llm(
@@ -1053,6 +1147,84 @@ class AgentService:
                 return parsed if isinstance(parsed, dict) else None
         except Exception:  # noqa: BLE001
             return None
+
+    async def _stream_design_visible_reply(
+        self,
+        *,
+        conversation: AgentConversation,
+        content: str,
+        attachments: list[AgentAssetRef],
+    ) -> AsyncIterator[str]:
+        if not self.settings.agent_llm_api_key:
+            return
+        state = self._load_json(conversation.state_json) or {}
+        payload = {
+            "model": self.settings.agent_llm_model,
+            "messages": [
+                {"role": "system", "content": self._build_design_visible_reply_system_prompt()},
+                {
+                    "role": "user",
+                    "content": self._build_design_visible_reply_user_prompt(
+                        content=content,
+                        state=state,
+                        attachments=attachments,
+                    ),
+                },
+            ],
+            "temperature": 0.2,
+            "stream": True,
+        }
+        async with httpx.AsyncClient(timeout=self.settings.agent_llm_timeout_seconds) as client:
+            async with client.stream(
+                "POST",
+                f"{self.settings.agent_llm_base_url.rstrip('/')}/v1/chat/completions",
+                headers={"Authorization": f"Bearer {self.settings.agent_llm_api_key}", "Content-Type": "application/json"},
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    raw_data = line.removeprefix("data:").strip()
+                    if raw_data == "[DONE]":
+                        break
+                    try:
+                        body = json.loads(raw_data)
+                    except json.JSONDecodeError:
+                        continue
+                    text = self._extract_stream_delta_text(body)
+                    if text:
+                        yield text
+
+    def _build_design_visible_reply_system_prompt(self) -> str:
+        return (
+            "你是金马珠宝内部的设计出图 Agent。你正在对话窗口直接回复设计师，必须输出自然中文正文。"
+            "不要输出 JSON、Markdown 表格、代码块或工具调用。"
+            "你的职责只是先给出简短承接，说明正在整理当前 brief 和下一步选择。"
+            "不要追问具体设计问题，不要提出具体选项，不要要求用户回答某个槽位；这些会由后续选项卡统一承载。"
+            "回复控制在 20-60 个中文字符。"
+        )
+
+    def _build_design_visible_reply_user_prompt(
+        self,
+        *,
+        content: str,
+        state: dict[str, Any],
+        attachments: list[AgentAssetRef],
+    ) -> str:
+        visible_state = {
+            "design_brief": state.get("design_brief") or {},
+            "pending_design_slot": state.get("pending_design_slot"),
+            "stone_analysis": state.get("stone_analysis"),
+            "has_design_source": bool(attachments or state.get("design_source_assets")),
+        }
+        return (
+            f"用户本轮输入：{content or '用户只上传/选择了图片，没有文字'}\n"
+            f"本轮是否带图：{bool(attachments)}\n"
+            f"当前状态：{json.dumps(visible_state, ensure_ascii=False)}\n"
+            "请直接输出会展示给设计师的流式回复正文。"
+        )
 
     def _build_design_brief_system_prompt(self) -> str:
         return (
@@ -1186,8 +1358,10 @@ class AgentService:
             has_design_source=has_design_source,
         )
         if llm_prompt:
-            return llm_prompt
-        return self._build_design_prompt(brief=brief, selected_cards=selected_cards, stone_analysis=stone_analysis, content=content)
+            return self._ensure_design_front_view_constraint(llm_prompt)
+        return self._ensure_design_front_view_constraint(
+            self._build_design_prompt(brief=brief, selected_cards=selected_cards, stone_analysis=stone_analysis, content=content)
+        )
 
     async def _call_design_generation_prompt_llm(
         self,
@@ -1218,6 +1392,7 @@ class AgentService:
                         "不要把专业参考原文、表格、英文术语堆砌进去，要吸收后改写成自然的珠宝设计描述。\n"
                         "prompt 必须结构清晰：主体品类、主石/裸石约束、金属材质、镶嵌工艺、风格语言、比例结构、画面质感。\n"
                         "如果是裸石镶嵌，必须强调：不改变裸石原始形状、颜色、大小比例、天然纹理，以裸石为核心设计镶口和结构。\n"
+                        f"必须包含这个硬性构图要求：{DESIGN_FRONT_VIEW_CONSTRAINT}\n"
                         "输出长度控制在 180-420 个中文字符，专业、明确、可生图。"
                     ),
                 },
@@ -1279,6 +1454,12 @@ class AgentService:
         cleaned = text.replace("|", " ").replace("`", " ")
         cleaned = " ".join(cleaned.split())
         return cleaned[:160]
+
+    def _ensure_design_front_view_constraint(self, prompt: str) -> str:
+        stripped = prompt.strip()
+        if "完整的珠宝设计正视图" in stripped and "不裁切" in stripped:
+            return stripped
+        return f"{stripped} {DESIGN_FRONT_VIEW_CONSTRAINT}"
 
     def _merge_design_content_into_brief(self, brief: dict[str, Any], content: str, *, pending_slot: str = "") -> None:
         stripped = content.strip()
@@ -2116,7 +2297,83 @@ class AgentService:
     def _chunk_text(self, value: str, size: int = 18) -> list[str]:
         if not value:
             return []
-        return [value[index : index + size] for index in range(0, len(value), size)]
+        chunks: list[str] = []
+        buffer = value
+        while buffer:
+            next_chunks, buffer = self._drain_stream_text_buffer(buffer, final=True, max_size=size * 2)
+            if not next_chunks:
+                break
+            chunks.extend(next_chunks)
+        return chunks
+
+    def _extract_stream_delta_text(self, body: dict[str, Any]) -> str:
+        choice = (body.get("choices") or [{}])[0]
+        delta = choice.get("delta") or {}
+        text = delta.get("content")
+        if isinstance(text, str):
+            return text
+        if isinstance(text, list):
+            parts: list[str] = []
+            for item in text:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+            return "".join(parts)
+        fallback_text = choice.get("text")
+        return fallback_text if isinstance(fallback_text, str) else ""
+
+    def _drain_stream_text_buffer(
+        self,
+        buffer: str,
+        *,
+        final: bool = False,
+        min_size: int = 4,
+        max_size: int = 18,
+    ) -> tuple[list[str], str]:
+        chunks: list[str] = []
+        while buffer:
+            if not final and len(buffer) < min_size:
+                break
+            split_at = self._find_stream_split_index(buffer, final=final, min_size=min_size, max_size=max_size)
+            if split_at is None:
+                break
+            chunk = buffer[:split_at]
+            buffer = buffer[split_at:]
+            if chunk:
+                chunks.append(chunk)
+        return chunks, buffer
+
+    def _find_stream_split_index(
+        self,
+        buffer: str,
+        *,
+        final: bool,
+        min_size: int,
+        max_size: int,
+    ) -> int | None:
+        if final and len(buffer) <= max_size:
+            return len(buffer)
+
+        soft_limit = min(len(buffer), max_size)
+        punctuation = "。！？!?；;：:\n"
+        for index in range(soft_limit - 1, min_size - 2, -1):
+            if buffer[index] in punctuation:
+                return index + 1
+
+        whitespace_index = -1
+        for index in range(soft_limit - 1, min_size - 2, -1):
+            if buffer[index].isspace():
+                whitespace_index = index + 1
+                break
+        if whitespace_index > 0:
+            return whitespace_index
+
+        if len(buffer) >= max_size:
+            return max_size
+        if final:
+            return len(buffer)
+        return None
 
     def _dump_json(self, value: Any) -> str | None:
         if value is None:

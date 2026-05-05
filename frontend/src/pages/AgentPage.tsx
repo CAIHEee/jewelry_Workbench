@@ -11,6 +11,7 @@ import {
   createAgentMemory,
   deleteAgentConversation,
   deleteAgentMemory,
+  endAgentConversationTurn,
   fetchGenerationJob,
   fetchAgentConversationDetail,
   fetchAgentConversations,
@@ -47,11 +48,13 @@ interface AgentFlowOption {
 }
 
 interface ActiveGenerationPreview {
+  conversationId: string;
   actionTitle: string;
   moduleKey: string;
   sourceUrl: string | null;
   resultUrl: string | null;
   resultAsset: AgentAssetRef | null;
+  errorMessage?: string | null;
 }
 
 interface AgentLightboxState {
@@ -271,6 +274,10 @@ function normalizeDesignOptions(items: unknown): AgentDesignOption[] {
     .slice(0, 4);
 }
 
+function normalizeDesignQuestion(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function getConversationDisplayTitle(conversation: AgentConversation) {
   if (/^(agent工作流|设计出图)_\d{8}_\d{6}$/.test(conversation.title)) {
     return conversation.title;
@@ -293,6 +300,17 @@ function AgentMarkdown({ content }: { content: string }) {
       >
         {content}
       </ReactMarkdown>
+    </div>
+  );
+}
+
+function AgentLoadingHint({ label }: { label: string }) {
+  return (
+    <div className="agent-loading-hint" role="status" aria-live="polite">
+      <span>{label}</span>
+      <i aria-hidden="true" />
+      <i aria-hidden="true" />
+      <i aria-hidden="true" />
     </div>
   );
 }
@@ -322,8 +340,15 @@ export function AgentPage({ assetItems }: AgentPageProps) {
   const [pendingDraftAttachments, setPendingDraftAttachments] = useState<AgentAssetRef[] | null>(null);
   const [pendingRefineContext, setPendingRefineContext] = useState<ResultOptionContext | null>(null);
   const [pendingDesignOptions, setPendingDesignOptions] = useState<AgentDesignOption[]>([]);
+  const [pendingDesignQuestion, setPendingDesignQuestion] = useState("");
+  const [pendingDesignOptionSource, setPendingDesignOptionSource] = useState("");
   const [designOtherText, setDesignOtherText] = useState("");
+  const [streamingAssistantId, setStreamingAssistantId] = useState<string | null>(null);
+  const [modelOutputLoading, setModelOutputLoading] = useState(false);
+  const [optionCardLoading, setOptionCardLoading] = useState(false);
+  const [optionCardLoadingText, setOptionCardLoadingText] = useState("正在生成选项卡");
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
+  const activeConversationIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     void bootstrap();
@@ -332,6 +357,10 @@ export function AgentPage({ assetItems }: AgentPageProps) {
   useEffect(() => {
     if (!activeConversationId) return;
     void loadConversation(activeConversationId);
+  }, [activeConversationId]);
+
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
   }, [activeConversationId]);
 
   useEffect(() => {
@@ -368,6 +397,8 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       const latestGenerated = detail.conversation.state?.latest_generated_asset;
       setLatestGeneratedAsset(latestGenerated && typeof latestGenerated === "object" ? latestGenerated as AgentAssetRef : null);
       setPendingDesignOptions(restorePendingDesignOptions(detail.conversation.state));
+      setPendingDesignQuestion(normalizeDesignQuestion(detail.conversation.state?.pending_design_question));
+      setPendingDesignOptionSource(String(detail.conversation.state?.pending_design_option_source ?? ""));
       setDesignOtherText("");
       void restoreSubmittedGeneration(detail.conversation.id, detail.actions, detail.messages);
     } catch (loadError) {
@@ -380,8 +411,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
   }
 
   async function restoreSubmittedGeneration(conversationId: string, actionItems: AgentAction[], messageItems: AgentMessage[]) {
-    if (activeGeneration) return;
-    const currentConversationId = activeConversationId;
+    if (activeGeneration && activeGeneration.conversationId === conversationId) return;
     const resultActionIds = new Set(
       messageItems
         .map((message) => {
@@ -396,11 +426,13 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     setProgressState("running");
     setJobProgress({ percent: 18, label: `${moduleLabels[pendingAction.module_key] ?? pendingAction.title}任务恢复中...` });
     setActiveGeneration({
+      conversationId,
       actionTitle: pendingAction.title,
       moduleKey: pendingAction.module_key,
       sourceUrl,
       resultUrl: null,
       resultAsset: null,
+      errorMessage: null,
     });
     try {
       const initialJob = await fetchGenerationJob(pendingAction.result_job_id);
@@ -419,18 +451,25 @@ export function AgentPage({ assetItems }: AgentPageProps) {
           image_url: imageUrl,
           name: moduleLabels[pendingAction.module_key] ?? pendingAction.title,
         });
-        setLatestGeneratedAsset(registeredAsset);
+        if (activeConversationIdRef.current === conversationId) {
+          setLatestGeneratedAsset(registeredAsset);
+        }
       }
       setProgressState("success");
       setJobProgress({ percent: 100, label: "已完成" });
-      setActiveGeneration(null);
-      if (currentConversationId === conversationId) {
+      setActiveGeneration((current) => (current?.conversationId === conversationId ? null : current));
+      if (activeConversationIdRef.current === conversationId) {
         await loadConversation(conversationId);
       }
     } catch (restoreError) {
       setProgressState("error");
       const message = restoreError instanceof Error ? restoreError.message : "恢复生成任务失败";
       setJobProgress({ percent: 100, label: message });
+      setActiveGeneration((current) =>
+        current?.conversationId === conversationId
+          ? { ...current, resultUrl: null, resultAsset: null, errorMessage: message }
+          : current,
+      );
       setError(message);
     }
   }
@@ -453,7 +492,13 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       setPendingDraftAttachments(null);
       setPendingRefineContext(null);
       setPendingDesignOptions([]);
+      setPendingDesignQuestion("");
+      setPendingDesignOptionSource("");
       setDesignOtherText("");
+      setStreamingAssistantId(null);
+      setModelOutputLoading(false);
+      setOptionCardLoading(false);
+      setOptionCardLoadingText("正在生成选项卡");
   }
 
   function handleNewConversation(nextMode = mode) {
@@ -529,6 +574,8 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     setError(null);
     setMemoryProposal(null);
     setPendingDesignOptions([]);
+    setPendingDesignQuestion("");
+    setPendingDesignOptionSource("");
     setDesignOtherText("");
     const tempUserMessage: AgentMessage = {
       id: `local-user-${Date.now()}`,
@@ -548,6 +595,10 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       created_at: new Date().toISOString(),
     };
     setMessages((current) => [...current, tempUserMessage, tempAssistantMessage]);
+    setStreamingAssistantId(assistantId);
+    setModelOutputLoading(true);
+    setOptionCardLoading(false);
+    setOptionCardLoadingText("正在生成选项卡");
     if (contentOverride === undefined) {
       setDraft("");
     }
@@ -560,19 +611,47 @@ export function AgentPage({ assetItems }: AgentPageProps) {
         { content, mode, attachments },
         {
           onDelta: (text) => {
+            if (text) {
+              setModelOutputLoading(false);
+            }
             setMessages((current) =>
               current.map((item) => (item.id === assistantId ? { ...item, content: `${item.content}${text}` } : item)),
             );
           },
           onAction: (action) => {
             setPendingDesignOptions([]);
+            setPendingDesignQuestion("");
+            setPendingDesignOptionSource("");
             setDesignOtherText("");
+            setModelOutputLoading(false);
+            setOptionCardLoading(false);
             setActions((current) => [action, ...current.filter((item) => item.id !== action.id)]);
             void handleConfirmAction(action);
           },
-          onDesignOptions: (options) => setPendingDesignOptions(options),
+          onDesignState: (state) => {
+            setPendingDesignQuestion(normalizeDesignQuestion(state.pending_design_question));
+            setPendingDesignOptionSource(String(state.pending_design_option_source ?? ""));
+          },
+          onDesignOptions: (options, meta) => {
+            setOptionCardLoading(false);
+            setPendingDesignQuestion(meta?.question?.trim() || "");
+            setPendingDesignOptionSource(meta?.source || "");
+            setPendingDesignOptions(options);
+          },
+          onOptionCardLoading: (message) => {
+            setOptionCardLoadingText(message || "正在生成选项卡");
+            setOptionCardLoading(true);
+          },
           onMemoryProposal: setMemoryProposal,
-          onError: (message) => setError(message),
+          onDone: () => {
+            setModelOutputLoading(false);
+            setOptionCardLoading(false);
+          },
+          onError: (message) => {
+            setModelOutputLoading(false);
+            setOptionCardLoading(false);
+            setError(message);
+          },
         },
       );
       setFiles([]);
@@ -585,8 +664,11 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       setMemories(memoryItems);
       await loadConversation(activeConversationId);
     } catch (sendError) {
+      setModelOutputLoading(false);
+      setOptionCardLoading(false);
       setError(sendError instanceof Error ? sendError.message : "Agent 回复失败");
     } finally {
+      setStreamingAssistantId(null);
       setLoading(false);
     }
   }
@@ -598,11 +680,13 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     setProgressState("running");
     setJobProgress({ percent: 18, label: `${moduleLabels[action.module_key] ?? action.title}任务排队中...` });
     setActiveGeneration({
+      conversationId: action.conversation_id,
       actionTitle: action.title,
       moduleKey: action.module_key,
       sourceUrl,
       resultUrl: null,
       resultAsset: null,
+      errorMessage: null,
     });
     setError(null);
     try {
@@ -624,23 +708,25 @@ export function AgentPage({ assetItems }: AgentPageProps) {
           image_url: imageUrl,
           name: moduleLabels[action.module_key] ?? action.title,
         });
-        setLatestGeneratedAsset(registeredAsset);
-        setActiveGeneration({
-          actionTitle: action.title,
-          moduleKey: action.module_key,
-          sourceUrl,
-          resultUrl: imageUrl,
-          resultAsset: registeredAsset,
-        });
+        if (activeConversationIdRef.current === action.conversation_id) {
+          setLatestGeneratedAsset(registeredAsset);
+        }
       }
       setProgressState("success");
       setJobProgress({ percent: 100, label: "已完成" });
-      await loadConversation(action.conversation_id);
-      setActiveGeneration(null);
+      setActiveGeneration((current) => (current?.conversationId === action.conversation_id ? null : current));
+      if (activeConversationIdRef.current === action.conversation_id) {
+        await loadConversation(action.conversation_id);
+      }
     } catch (confirmError) {
       setProgressState("error");
       const message = confirmError instanceof Error ? confirmError.message : "Agent 动作执行失败";
       setJobProgress({ percent: 100, label: message });
+      setActiveGeneration((current) =>
+        current?.conversationId === action.conversation_id
+          ? { ...current, resultUrl: null, resultAsset: null, errorMessage: message }
+          : current,
+      );
       setError(message);
     }
   }
@@ -660,6 +746,32 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     }
   }
 
+  async function handleEndConversation() {
+    if (!activeConversationId || loading) return;
+    setLoading(true);
+    setError(null);
+    setModelOutputLoading(false);
+    setOptionCardLoading(false);
+    setStreamingAssistantId(null);
+    clearCurrentResultChoiceState();
+    try {
+      const detail = await endAgentConversationTurn(activeConversationId);
+      setMessages(detail.messages);
+      setActions(detail.actions);
+      setMode(detail.conversation.mode);
+      setPendingDesignOptions([]);
+      setPendingDesignQuestion("");
+      setPendingDesignOptionSource("");
+      const [conversationItems, memoryItems] = await Promise.all([fetchAgentConversations(), fetchAgentMemories()]);
+      setConversations(conversationItems);
+      setMemories(memoryItems);
+    } catch (endError) {
+      setError(endError instanceof Error ? endError.message : "结束对话失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (pendingDesignOptions.length > 0) {
       event.preventDefault();
@@ -676,6 +788,26 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     if (!event.target.value.trim()) {
       setPendingDraftAttachments(null);
     }
+  }
+
+  function clearCurrentResultChoiceState() {
+    setPendingRefineContext(null);
+    setPendingDesignOptions([]);
+    setPendingDesignQuestion("");
+    setPendingDesignOptionSource("");
+    setDesignOtherText("");
+    setActiveGeneration((current) => (current?.conversationId === activeConversationId ? null : current));
+    setProgressState("idle");
+    setJobProgress(null);
+    setConsumedResultMessageIds((current) => {
+      const next = new Set(current);
+      messages.forEach((message) => {
+        if (getGenerationEvent(message)) {
+          next.add(message.id);
+        }
+      });
+      return next;
+    });
   }
 
   function handleResultOption(option: AgentFlowOption, context: ResultOptionContext = {}) {
@@ -700,7 +832,8 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       return;
     }
     if (option.behavior === "end") {
-      void handleSend(option.prompt);
+      clearCurrentResultChoiceState();
+      void handleEndConversation();
       return;
     }
     if (option.prompt.includes("精修")) {
@@ -741,8 +874,35 @@ export function AgentPage({ assetItems }: AgentPageProps) {
   }
 
   const activeOptions = mode === "design" ? [] : latestGeneratedAsset ? [] : workflowOptions;
-  const shouldShowInlineOptions = activeOptions.length > 0 && !activeGeneration;
+  const activeGenerationAlreadyPersisted = Boolean(
+    activeGeneration?.resultUrl &&
+      messages.some((message) => {
+        const generationEvent = getGenerationEvent(message);
+        const resultAsset = generationEvent?.result_asset ?? null;
+        return Boolean(generationEvent && getAssetPreviewUrl(resultAsset) === activeGeneration.resultUrl);
+      }),
+  );
+  const visibleActiveGeneration =
+    activeGeneration?.conversationId === activeConversationId && !activeGenerationAlreadyPersisted ? activeGeneration : null;
+  const visibleGenerationFailed = Boolean(visibleActiveGeneration?.errorMessage) || progressState === "error";
+  const visibleActiveGenerationModuleKey = visibleActiveGeneration?.moduleKey;
+  const shouldShowInlineOptions = activeOptions.length > 0 && !visibleActiveGeneration;
   const isDesignChoiceLocked = pendingDesignOptions.length > 0 && !loading;
+  const hasUnconsumedLatestResultOptions = messages.some((message) => {
+    const generationEvent = getGenerationEvent(message);
+    const resultAsset = generationEvent?.result_asset ?? message.attachments?.[0] ?? null;
+    const resultUrl = generationEvent ? getAssetPreviewUrl(resultAsset) : null;
+    const isLatestResult = Boolean(resultUrl && latestGeneratedAsset && resultUrl === getAssetPreviewUrl(latestGeneratedAsset));
+    return Boolean(generationEvent && resultUrl && isLatestResult && !consumedResultMessageIds.has(message.id));
+  });
+  const isResultChoiceLocked = Boolean(
+    pendingRefineContext ||
+      (visibleActiveGeneration && (visibleActiveGeneration.resultUrl || visibleGenerationFailed)) ||
+      (!visibleActiveGeneration && hasUnconsumedLatestResultOptions),
+  );
+  const isComposerLocked = isDesignChoiceLocked || isResultChoiceLocked;
+  const shouldShowOptionCardLoading =
+    Boolean(activeConversationId) && mode === "design" && loading && optionCardLoading && pendingDesignOptions.length === 0;
 
   return (
     <div className="agent-chat-page">
@@ -782,7 +942,8 @@ export function AgentPage({ assetItems }: AgentPageProps) {
               const sourceUrl = generationEvent ? getAssetPreviewUrl(generationEvent.source_assets?.[0]) : null;
               const isLatestResult = Boolean(resultUrl && latestGeneratedAsset && resultUrl === getAssetPreviewUrl(latestGeneratedAsset));
               const generationModuleKey = generationEvent?.module_key;
-              const showResultOptions = isLatestResult && !activeGeneration && !loading && !consumedResultMessageIds.has(message.id);
+              const showResultOptions = isLatestResult && !visibleActiveGeneration && !loading && !consumedResultMessageIds.has(message.id);
+              const isStreamingAssistant = message.role === "assistant" && message.id === streamingAssistantId;
               return (
                 <div className="agent-message-group" key={message.id}>
                 <article className={message.role === "assistant" ? "agent-message assistant" : "agent-message user"}>
@@ -824,7 +985,11 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                     </div>
                   ) : (
                     <div className="agent-message-content">
-                      <AgentMarkdown content={message.content} />
+                      {isStreamingAssistant && modelOutputLoading && !message.content ? (
+                        <AgentLoadingHint label="模型正在组织回复" />
+                      ) : (
+                        <AgentMarkdown content={message.content} />
+                      )}
                       {message.attachments?.length ? (
                         <div className="agent-attachment-list">
                           {message.attachments.map((item, index) => (
@@ -863,6 +1028,14 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                 </div>
               );
             })}
+
+            {shouldShowOptionCardLoading ? (
+              <article className="agent-message assistant agent-options-message agent-option-loading-message">
+                <div className="agent-option-loading-card">
+                  <AgentLoadingHint label={optionCardLoadingText} />
+                </div>
+              </article>
+            ) : null}
 
             {pendingRefineContext ? (
               <article className="agent-message assistant agent-options-message agent-refine-choice-message">
@@ -910,8 +1083,12 @@ export function AgentPage({ assetItems }: AgentPageProps) {
               <article className="agent-message assistant agent-options-message agent-design-choice-message">
                 <div className="agent-design-choice-card">
                   <div className="agent-design-choice-head">
-                    <strong>请选择一个方向</strong>
-                    <span>选择后我会继续整理 brief；也可以在“其他”中补充自己的想法。</span>
+                    <strong>{pendingDesignQuestion || "请选择一个方向"}</strong>
+                    <span>
+                      {pendingDesignOptionSource === "fallback"
+                        ? "模型未返回可用选项，已按当前槽位给出兜底选项；也可以在“其他”中补充。"
+                        : "选择后我会继续整理 brief；也可以在“其他”中补充自己的想法。"}
+                    </span>
                   </div>
                   <div className="agent-design-choice-grid">
                     {pendingDesignOptions.map((option) => (
@@ -954,34 +1131,51 @@ export function AgentPage({ assetItems }: AgentPageProps) {
               </article>
             ) : null}
 
-            {activeGeneration ? (
+            {visibleActiveGeneration ? (
               <article className="agent-message assistant agent-generation-message">
                 <div className="agent-message-content agent-generation-card">
                   <div className="agent-generation-head">
                     <div>
-                      <h4>{moduleLabels[activeGeneration.moduleKey] ?? activeGeneration.actionTitle}</h4>
-                      <p>{activeGeneration.resultUrl ? "生成已完成，可以继续选择下一步。" : "我正在为你生成图片，请稍候。"}</p>
+                      <h4>{moduleLabels[visibleActiveGeneration.moduleKey] ?? visibleActiveGeneration.actionTitle}</h4>
+                      <p>
+                        {visibleGenerationFailed
+                          ? visibleActiveGeneration.errorMessage || jobProgress?.label || "本次生成失败，请稍后重试。"
+                          : visibleActiveGeneration.resultUrl
+                            ? "生成已完成，可以继续选择下一步。"
+                            : "我正在为你生成图片，请稍候。"}
+                      </p>
                     </div>
                     {progressState === "running" ? null : <span>{progressState === "success" ? "已完成" : "失败"}</span>}
                   </div>
                   <div className="agent-generation-grid agent-generation-grid-single">
                     <div className="agent-generation-preview-frame">
                       <button
-                        className={activeGeneration.resultUrl ? "agent-generation-tile has-image agent-generation-clickable" : "agent-generation-tile"}
+                        className={
+                          visibleActiveGeneration.resultUrl
+                            ? "agent-generation-tile has-image agent-generation-clickable"
+                            : visibleGenerationFailed
+                              ? "agent-generation-tile agent-generation-failed"
+                              : "agent-generation-tile"
+                        }
                         type="button"
-                        disabled={!activeGeneration.resultUrl}
+                        disabled={!visibleActiveGeneration.resultUrl}
                         onClick={() =>
-                          activeGeneration.resultUrl
+                          visibleActiveGeneration.resultUrl
                             ? setLightbox({
-                                title: moduleLabels[activeGeneration.moduleKey] ?? activeGeneration.actionTitle,
-                                sourceUrl: activeGeneration.sourceUrl,
-                                resultUrl: activeGeneration.resultUrl,
+                                title: moduleLabels[visibleActiveGeneration.moduleKey] ?? visibleActiveGeneration.actionTitle,
+                                sourceUrl: visibleActiveGeneration.sourceUrl,
+                                resultUrl: visibleActiveGeneration.resultUrl,
                               })
                             : undefined
                         }
                       >
-                        {activeGeneration.resultUrl ? (
-                          <img src={activeGeneration.resultUrl} alt="生成结果" />
+                        {visibleActiveGeneration.resultUrl ? (
+                          <img src={visibleActiveGeneration.resultUrl} alt="生成结果" />
+                        ) : visibleGenerationFailed ? (
+                          <div className="agent-generation-error-state">
+                            <strong>生成失败</strong>
+                            <span>{visibleActiveGeneration.errorMessage || jobProgress?.label || "上游生成服务未返回结果。"}</span>
+                          </div>
                         ) : (
                           <div className="agent-generation-placeholder">
                             <span />
@@ -989,10 +1183,10 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                           </div>
                         )}
                       </button>
-                      {activeGeneration.resultUrl ? (
+                      {visibleActiveGeneration.resultUrl ? (
                         <a
                           className="agent-generation-download-button"
-                          href={activeGeneration.resultUrl}
+                          href={visibleActiveGeneration.resultUrl}
                           download
                           aria-label="下载生成图"
                           title="下载生成图"
@@ -1005,37 +1199,77 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                 </div>
               </article>
             ) : null}
-            {activeGeneration?.resultUrl ? (
+            {visibleActiveGeneration && (visibleActiveGeneration.resultUrl || visibleGenerationFailed) ? (
               <article className="agent-message assistant agent-options-message">
                 <div className="agent-result-step-grid">
-                  {getResultStepOptions(activeGeneration.moduleKey).map((option) => (
-                    <button
-                      className="agent-option-card"
-                      type="button"
-                      key={option.title}
-                      data-helper={option.helper}
-                      onClick={() => handleResultOption(option, { resultAsset: activeGeneration.resultAsset })}
-                      disabled={loading}
-                    >
-                      <strong>{option.title}</strong>
-                      <span>{option.helper}</span>
-                    </button>
-                  ))}
+                  {(visibleGenerationFailed
+                    ? [
+                        {
+                          title: "重新生成",
+                          helper: "沿用当前来源重新提交一次",
+                          prompt: "重新生成",
+                          behavior: "regenerate_from_sources" as const,
+                        },
+                        {
+                          title: "修改设计",
+                          helper: "返回 brief 调整理念、材质或风格",
+                          prompt: "修改设计：",
+                          behavior: "draft_design_revision" as const,
+                        },
+                        {
+                          title: "结束对话",
+                          helper: "本轮生成失败，先结束这次对话",
+                          prompt: "结束对话",
+                          behavior: "end" as const,
+                        },
+                      ]
+                    : getResultStepOptions(visibleActiveGenerationModuleKey))
+                    .map((option) => (
+                      <button
+                        className="agent-option-card"
+                        type="button"
+                        key={option.title}
+                        data-helper={option.helper}
+                        onClick={() =>
+                          handleResultOption(option, {
+                            resultAsset: visibleActiveGeneration.resultAsset,
+                            sourceAssets:
+                              visibleActiveGeneration.resultAsset
+                                ? [visibleActiveGeneration.resultAsset]
+                                : visibleActiveGeneration.sourceUrl
+                                  ? [{ storage_url: visibleActiveGeneration.sourceUrl }]
+                                  : undefined,
+                          })
+                        }
+                        disabled={loading}
+                      >
+                        <strong>{option.title}</strong>
+                        <span>{option.helper}</span>
+                      </button>
+                    ))}
                 </div>
               </article>
             ) : null}
           </div>
 
           <div className="agent-composer-wrap">
-            <div className={isDesignChoiceLocked ? "agent-composer locked" : "agent-composer"}>
+            <div className={isComposerLocked ? "agent-composer locked" : "agent-composer"}>
               <textarea
                 ref={draftRef}
                 value={draft}
                 onChange={handleDraftChange}
                 onKeyDown={handleInputKeyDown}
-                placeholder={isDesignChoiceLocked ? "请先选择上方选项，或在“其他”中补充" : mode === "design" ? "描述设计理念、材质、风格，或上传裸石图片后发送" : "输入其他需求，或先用下方 + 上传/选择图片"}
+                placeholder={
+                  isDesignChoiceLocked
+                    ? "请先选择上方选项，或在“其他”中补充"
+                    : isResultChoiceLocked
+                      ? "请先选择上方结果处理选项"
+                      : mode === "design"
+                        ? "描述设计理念、材质、风格，或上传裸石图片后发送"
+                        : "输入其他需求，或先用下方 + 上传/选择图片"
+                }
                 rows={1}
-                disabled={isDesignChoiceLocked}
+                disabled={isComposerLocked}
               />
               <div className="agent-composer-toolbar">
                 <div className="agent-composer-tools">
@@ -1052,7 +1286,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                 </div>
                 <div className="agent-send-row">
                   <span>Enter 发送 / Shift+Enter 换行</span>
-                  <button className="agent-send-button" type="button" onClick={() => handleSend()} disabled={loading || isDesignChoiceLocked || (!draft.trim() && files.length === 0 && selectedAssetItems.length === 0)}>
+                  <button className="agent-send-button" type="button" onClick={() => handleSend()} disabled={loading || isComposerLocked || (!draft.trim() && files.length === 0 && selectedAssetItems.length === 0)}>
                     <span aria-hidden="true">›</span>
                     发送
                   </button>

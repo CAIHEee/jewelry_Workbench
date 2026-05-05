@@ -9,6 +9,7 @@ const progressPhases = [
   { at: 74, label: "增强材质与光感中..." },
   { at: 95, label: "整理精修结果..." },
 ];
+const preferredProductRefineModelId = "gemini-3.1-flash-image-preview";
 
 interface ProductRefinePageProps {
   assetItems: AssetItem[];
@@ -42,6 +43,8 @@ export function ProductRefinePage(props: ProductRefinePageProps) {
       progressPhases={progressPhases}
       successLabel="精修图已完成"
       errorProgressLabel="产品精修失败"
+      enableLocalMarkup
+      preferredModelId={preferredProductRefineModelId}
     />
   );
 }
