@@ -68,31 +68,9 @@ MODEL_CATALOG: dict[str, TTAPIModelConfig] = {
         supports_reference_images=True,
         pricing_hint="GPT Image 2 All via APIYI chat completions",
     ),
-    "gpt-image-2-aiapis": TTAPIModelConfig(
-        id="gpt-image-2-aiapis",
-        label="AIAPIS · GPT Image 2",
-        provider=ProviderType.aiapis,
-        category="image_generation",
-        upstream_model_id="gpt-image-2",
-        supports_text_to_image=True,
-        supports_multi_image_fusion=True,
-        supports_reference_images=True,
-        pricing_hint="GPT Image 2 generation via AIAPIS relay",
-    ),
-    "gpt-image-2-dmxapi": TTAPIModelConfig(
-        id="gpt-image-2-dmxapi",
-        label="DMXAPI · GPT Image 2",
-        provider=ProviderType.dmxapi,
-        category="image_generation",
-        upstream_model_id="gpt-image-2",
-        supports_text_to_image=False,
-        supports_multi_image_fusion=True,
-        supports_reference_images=True,
-        pricing_hint="GPT Image 2 image editing via DMXAPI relay",
-    ),
     "gemini-3.1-flash-image-preview": TTAPIModelConfig(
         id="gemini-3.1-flash-image-preview",
-        label="Nano Banana 2",
+        label="APIYI · Nano Banana 2",
         provider=ProviderType.gemini,
         category="image_generation",
         upstream_model_id="gemini-3.1-flash-image-preview",
@@ -1258,6 +1236,7 @@ class AIService:
                     },
                 },
             },
+            timeout=self.settings.apiyi_timeout_seconds,
         )
         image_bytes, content_type = self._extract_inline_image(data)
         stored_asset = await self._store_generated_binary_asset(
@@ -1314,6 +1293,7 @@ class AIService:
                     "aspect_ratio": request.aspect_ratio,
                 },
             },
+            timeout=self.settings.apiyi_timeout_seconds,
         )
         upstream_image_url = self._extract_image_url(data)
         stored_asset = await self._store_generated_asset(
@@ -1561,6 +1541,7 @@ class AIService:
                     },
                 },
             },
+            timeout=self.settings.apiyi_timeout_seconds,
         )
         image_bytes, content_type = self._extract_inline_image(data)
         stored_asset = await self._store_generated_binary_asset(
@@ -1690,6 +1671,7 @@ class AIService:
                     },
                 },
             },
+            timeout=self.settings.apiyi_timeout_seconds,
         )
         result_image_bytes, content_type = self._extract_inline_image(data)
         stored_asset = await self._store_generated_binary_asset(
@@ -1996,8 +1978,9 @@ class AIService:
         path: str,
         api_key: str,
         payload: dict[str, Any],
+        timeout: float | None = None,
     ) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=self.settings.ttapi_timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=timeout or self.settings.ttapi_timeout_seconds) as client:
             response = await client.post(
                 f"{base_url}{path}",
                 headers={
@@ -2042,6 +2025,7 @@ class AIService:
                     }
                 ],
             },
+            timeout=self.settings.apiyi_timeout_seconds,
         )
 
     async def _post_json_with_bearer_base_url(

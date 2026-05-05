@@ -46,7 +46,7 @@ export function ImageEditPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
     () => models.find((item) => item.id === preferredImageEditModelId)?.id ?? defaultModelId,
     [defaultModelId, models],
   );
-  const [model, setModel] = useState(imageEditDefaultModelId);
+  const [model, setModel] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<AssetItem[]>([]);
   const [result, setResult] = useState<GenerationResult | null>(null);

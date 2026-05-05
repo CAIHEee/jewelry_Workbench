@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     apiyi_base_url: str = Field(default="https://api.apiyi.com", alias="APIYI_BASE_URL")
     apiyi_openai_base_url: str = Field(default="https://api.apiyi.com/v1", alias="APIYI_OPENAI_BASE_URL")
     apiyi_gemini_base_url: str = Field(default="https://api.apiyi.com/v1beta", alias="APIYI_GEMINI_BASE_URL")
+    apiyi_timeout_seconds: float = Field(default=600.0, alias="APIYI_TIMEOUT_SECONDS")
     aiapis_api_key: str | None = Field(default=None, alias="AIAPIS_API_KEY")
     aiapis_base_url: str = Field(default="https://aiapis.help/v1", alias="AIAPIS_BASE_URL")
     aiapis_timeout_seconds: float = Field(default=300.0, alias="AIAPIS_TIMEOUT_SECONDS")

@@ -34,6 +34,7 @@ from app.services.job_queue_service import JobQueueService
 
 
 DEFAULT_IMAGE_MODEL = "gpt-image-2-all-apiyi"
+DEFAULT_SKETCH_TO_REALISTIC_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_TEXT_TO_IMAGE_PROMPT_SUFFIX = "高级珠宝产品渲染效果，背景干净，金属光泽真实，工艺细节清晰。"
 DESIGN_FRONT_VIEW_CONSTRAINT = (
     "必须生成完整的珠宝设计正视图，主体珠宝完整入画、居中展示，不裁切、不只展示局部特写，"
@@ -1888,7 +1889,7 @@ class AgentService:
                 "module_key": module_key,
                 "title": rule["title"],
                 "prompt": prompt,
-                "params": {"model": DEFAULT_IMAGE_MODEL, "image_size": "2K" if module_key == "grayscale_relief" else "1K"},
+                "params": {"model": self._default_model_for_module(module_key), "image_size": "2K" if module_key == "grayscale_relief" else "1K"},
                 "source_assets": [item.model_dump(mode="json") for item in source_assets],
                 "source_image_urls": [],
                 "editable_prompt": bool(rule["editable_prompt"]),
@@ -1948,7 +1949,7 @@ class AgentService:
 
     def _submit_action_card(self, card: AgentActionCard, *, current_user: User):
         params = dict(card.params)
-        model = str(params.get("model") or DEFAULT_IMAGE_MODEL)
+        model = str(params.get("model") or self._default_model_for_module(card.module_key))
         prompt = card.prompt or ""
         source_urls = self._collect_source_urls(card.source_assets, card.source_image_urls)
         source_names = [item.name or f"reference-{index + 1}.png" for index, item in enumerate(card.source_assets)]
@@ -2016,11 +2017,22 @@ class AgentService:
             card.prompt = rule.get("default_prompt")
         if not card.prompt and rule.get("default_prompt") is not None:
             card.prompt = rule.get("default_prompt")
+        params = dict(card.params)
+        if card.module_key == "sketch_to_realistic":
+            params["model"] = DEFAULT_SKETCH_TO_REALISTIC_MODEL
+        elif not params.get("model"):
+            params["model"] = self._default_model_for_module(card.module_key)
+        card.params = params
         source_urls = self._collect_source_urls(card.source_assets, card.source_image_urls)
         if len(source_urls) < int(rule["min_images"]):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{rule['title']} 至少需要 {rule['min_images']} 张参考图。")
         for url in source_urls:
             self.asset_service.ensure_storage_url_access(storage_url=url, current_user=current_user)
+
+    def _default_model_for_module(self, module_key: str) -> str:
+        if module_key == "sketch_to_realistic":
+            return DEFAULT_SKETCH_TO_REALISTIC_MODEL
+        return DEFAULT_IMAGE_MODEL
 
     def _normalize_asset_refs(self, attachments: list[AgentAssetRef], *, current_user: User) -> list[AgentAssetRef]:
         normalized: list[AgentAssetRef] = []

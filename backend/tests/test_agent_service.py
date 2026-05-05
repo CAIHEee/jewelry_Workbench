@@ -325,7 +325,9 @@ def test_workflow_uses_recent_image_and_routes_sketch_to_realistic(auth_client: 
     assert response.status_code == 200
     assert "event: action_card" in response.text
     detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
-    assert detail["actions"][0]["module_key"] == "sketch_to_realistic"
+    action = detail["actions"][0]
+    assert action["module_key"] == "sketch_to_realistic"
+    assert action["params"]["model"] == "gemini-3.1-flash-image-preview"
 
 
 def test_workflow_prompt_with_image_uses_llm_planning(auth_client: TestClient, monkeypatch) -> None:
