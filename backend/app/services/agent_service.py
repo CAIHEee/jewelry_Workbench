@@ -63,6 +63,11 @@ PRODUCT_REFINE_DEFAULT_PROMPT = (
     "宝石通透度、钻石火彩、边缘高光、阴影层次和整体清晰度，修正轻微变形、脏污、过曝或塑料感，"
     "背景保持干净，呈现真实高级珠宝棚拍效果。"
 )
+PRODUCT_REFINE_REMOVE_SELECTED_PROMPT = (
+    "以参考图为唯一依据进行局部修改：严格移除参考图中黄色线圈定/标注的区域，"
+    "移除后不在该位置补充、绘制任何新元素，也不修改周围的原有细节，"
+    "不新增、不改动、不添加任何其他内容，除了黄线区域的移除操作，画面其他部分保持100%不变。"
+)
 
 
 MODULE_RULES: dict[str, dict[str, Any]] = {
@@ -681,22 +686,29 @@ class AgentService:
             record.state_json = self._dump_json(state)
             record.current_stage = module_key
             record.updated_at = datetime.now(timezone.utc)
+            existing_result_message = self._find_generation_result_message(
+                session=session,
+                conversation_id=conversation_id,
+                action_id=action_id,
+                image_url=image_url,
+            )
             session.commit()
-        self._create_message(
-            conversation_id=conversation_id,
-            current_user=current_user,
-            role="assistant",
-            content=f"已完成{action_title}。可以继续选择下一步。",
-            attachments=[result_ref],
-            event={
-                "type": "generation_result",
-                "action_id": action_id,
-                "module_key": module_key,
-                "title": action_title,
-                "source_assets": [item.model_dump(mode="json") for item in source_refs],
-                "result_asset": result_ref.model_dump(mode="json"),
-            },
-        )
+        if existing_result_message is None:
+            self._create_message(
+                conversation_id=conversation_id,
+                current_user=current_user,
+                role="assistant",
+                content=f"已完成{action_title}。可以继续选择下一步。",
+                attachments=[result_ref],
+                event={
+                    "type": "generation_result",
+                    "action_id": action_id,
+                    "module_key": module_key,
+                    "title": action_title,
+                    "source_assets": [item.model_dump(mode="json") for item in source_refs],
+                    "result_asset": result_ref.model_dump(mode="json"),
+                },
+            )
         return result_ref
 
     def end_conversation_turn(self, *, conversation_id: str, current_user: User) -> AgentConversationDetail:
@@ -1892,6 +1904,8 @@ class AgentService:
             if stripped.startswith(prefix):
                 custom_prompt = stripped[len(prefix) :].strip()
                 if custom_prompt:
+                    if self._is_remove_selected_refine_intent(custom_prompt):
+                        return PRODUCT_REFINE_REMOVE_SELECTED_PROMPT
                     return f"{PRODUCT_REFINE_DEFAULT_PROMPT}\n用户补充要求：{custom_prompt}"
                 return PRODUCT_REFINE_DEFAULT_PROMPT
         for prefix in ("仅自定义精修：", "仅自定义精修:", "自定义精修：", "自定义精修:"):
@@ -1902,8 +1916,28 @@ class AgentService:
             custom_prompt = stripped.split("：", 1)[-1] if "：" in stripped else stripped.split(":", 1)[-1]
             custom_prompt = custom_prompt.strip()
             if custom_prompt:
+                if self._is_remove_selected_refine_intent(custom_prompt):
+                    return PRODUCT_REFINE_REMOVE_SELECTED_PROMPT
                 return f"{PRODUCT_REFINE_DEFAULT_PROMPT}\n用户补充要求：{custom_prompt}"
+        if self._is_remove_selected_refine_intent(stripped):
+            return PRODUCT_REFINE_REMOVE_SELECTED_PROMPT
         return f"{PRODUCT_REFINE_DEFAULT_PROMPT}\n用户补充要求：{stripped}"
+
+    def _is_remove_selected_refine_intent(self, content: str) -> bool:
+        normalized = content.strip().lower().replace(" ", "")
+        return any(
+            keyword in normalized
+            for keyword in (
+                "删除选中内容",
+                "移除选中内容",
+                "删除标注",
+                "移除标注",
+                "删除圈选",
+                "移除圈选",
+                "去掉标注",
+                "去掉圈选",
+            )
+        )
 
     def _fallback_reply(self, mode: str, content: str, attachments: list[AgentAssetRef]) -> str:
         if mode == "design":
@@ -2094,6 +2128,31 @@ class AgentService:
             session.refresh(record)
         return record
 
+    def _find_generation_result_message(
+        self,
+        *,
+        session: Any,
+        conversation_id: str,
+        action_id: str | None,
+        image_url: str,
+    ) -> AgentMessage | None:
+        records = session.execute(
+            select(AgentMessage)
+            .where(AgentMessage.conversation_id == conversation_id)
+            .where(AgentMessage.role == "assistant")
+        ).scalars().all()
+        for record in records:
+            event = self._load_json(record.event_json)
+            if not isinstance(event, dict) or event.get("type") != "generation_result":
+                continue
+            result_asset = event.get("result_asset")
+            result_url = result_asset.get("preview_url") or result_asset.get("storage_url") if isinstance(result_asset, dict) else None
+            if action_id and event.get("action_id") == action_id:
+                return record
+            if isinstance(result_url, str) and result_url == image_url:
+                return record
+        return None
+
     def _next_message_timestamp(self, session: Any, conversation_id: str) -> datetime:
         now = datetime.now(timezone.utc)
         latest = session.execute(
@@ -2244,6 +2303,10 @@ class AgentService:
             "当用户输入以“Agent精修”开头时，必须生成 product_refine 动作卡。你需要根据用户补充要求整理最终精修提示词，"
             "并从图片引用中自行选择 source_assets：通常当前生成图必选；如果用户要求保持原设计结构、修正偏离线稿、补回设计细节，"
             "则同时带上原始线稿/输入图；如果只是材质、光影、清晰度、背景等局部优化，可以只带当前生成图。\n"
+            "当用户输入“Agent精修：删除选中内容”或表达删除/移除圈选标注区域时，必须直接使用局部删除模板语义："
+            f"{PRODUCT_REFINE_REMOVE_SELECTED_PROMPT}\n"
+            "当用户输入其它局部修改要求时，需要先理解标注图和文字意图，把要求增强成清晰可执行的产品精修 prompt，"
+            "强调只修改标注区域，未标注区域保持不变。\n"
             f"用户长期偏好：\n{memory_text}\n"
             f"{terms}"
         )

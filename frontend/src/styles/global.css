@@ -4113,6 +4113,39 @@ button.agent-generation-tile.agent-generation-clickable,
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.agent-local-refine-card {
+  width: min(100%, 640px);
+  gap: 12px;
+}
+
+.agent-local-refine-preview {
+  width: min(100%, 280px);
+  aspect-ratio: 1;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.agent-local-refine-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.agent-local-refine-input {
+  width: 100%;
+  min-height: 82px;
+  resize: vertical;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(10, 12, 16, 0.86);
+  color: #eef2f8;
+  padding: 10px 12px;
+  line-height: 1.5;
+}
+
 .agent-design-choice-message {
   margin-top: -2px;
 }

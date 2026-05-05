@@ -426,6 +426,33 @@ def test_custom_refine_prompt_does_not_append_default_prompt(auth_client: TestCl
     assert action["source_image_urls"] == ["https://example.com/sketch.png", "https://example.com/current.png"]
 
 
+def test_agent_refine_remove_selected_uses_local_delete_template(auth_client: TestClient, monkeypatch) -> None:
+    async def fake_llm(self, *, conversation, current_user, content, attachments, memories):  # noqa: ANN001, ARG001
+        return self._heuristic_agent_result(conversation.mode, content, attachments)
+
+    monkeypatch.setattr(AgentService, "_call_llm_or_fallback", fake_llm)
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "workflow"})
+    conversation_id = created.json()["id"]
+
+    response = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "Agent精修：删除选中内容",
+            "attachments": [
+                {"name": "marked.png", "storage_url": "https://example.com/marked.png"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
+    action = detail["actions"][0]
+    assert action["module_key"] == "product_refine"
+    assert "严格移除参考图中黄色线圈定/标注的区域" in action["prompt"]
+    assert "画面其他部分保持100%不变" in action["prompt"]
+
+
 def test_card_action_grayscale_uses_explicit_result_without_llm(auth_client: TestClient, monkeypatch) -> None:
     async def fail_if_llm_called(self, *, conversation, current_user, content, attachments, memories):  # noqa: ANN001, ARG001
         raise AssertionError("Card action routing should not call the LLM.")

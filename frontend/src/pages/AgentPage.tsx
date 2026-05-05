@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 
 import { AssetSourcePicker } from "../components/AssetSourcePicker";
 import { FloatingToast } from "../components/FloatingToast";
+import { LocalImageMarkupEditor } from "../components/LocalImageMarkupEditor";
 import { ResultPreviewModal } from "../components/ResultPreviewModal";
 import {
   confirmAgentAction,
@@ -44,7 +45,7 @@ interface AgentFlowOption {
   title: string;
   helper: string;
   prompt: string;
-  behavior?: "send" | "draft_refine_prompt" | "regenerate_from_sources" | "draft_design_revision" | "end";
+  behavior?: "send" | "draft_refine_prompt" | "regenerate_from_sources" | "draft_design_revision" | "local_refine" | "end";
 }
 
 interface ActiveGenerationPreview {
@@ -154,6 +155,12 @@ const designResultStepOptions: AgentFlowOption[] = [
     behavior: "draft_design_revision",
   },
   {
+    title: "局部修改",
+    helper: "标注设计图上的局部区域，再提交精修",
+    prompt: "Agent精修：删除选中内容",
+    behavior: "local_refine",
+  },
+  {
     title: "结束对话",
     helper: "本轮设计结果已确认，暂时不继续生成",
     prompt: "结束对话",
@@ -176,6 +183,12 @@ const refineChoiceOptions: AgentFlowOption[] = [
     title: "仅用自定义提示词",
     helper: "不叠加默认精修词，只按你的提示词进行精修",
     prompt: "仅自定义精修：",
+  },
+  {
+    title: "局部修改",
+    helper: "在当前结果图上标注区域，可删除选中内容或补充修改要求",
+    prompt: "Agent精修：删除选中内容",
+    behavior: "local_refine",
   },
 ];
 
@@ -339,6 +352,10 @@ export function AgentPage({ assetItems }: AgentPageProps) {
   const [pendingDeleteConversation, setPendingDeleteConversation] = useState<AgentConversation | null>(null);
   const [pendingDraftAttachments, setPendingDraftAttachments] = useState<AgentAssetRef[] | null>(null);
   const [pendingRefineContext, setPendingRefineContext] = useState<ResultOptionContext | null>(null);
+  const [pendingLocalRefineContext, setPendingLocalRefineContext] = useState<ResultOptionContext | null>(null);
+  const [localMarkupFile, setLocalMarkupFile] = useState<File | null>(null);
+  const [localMarkupPreviewUrl, setLocalMarkupPreviewUrl] = useState<string | null>(null);
+  const [localRefinePrompt, setLocalRefinePrompt] = useState("");
   const [pendingDesignOptions, setPendingDesignOptions] = useState<AgentDesignOption[]>([]);
   const [pendingDesignQuestion, setPendingDesignQuestion] = useState("");
   const [pendingDesignOptionSource, setPendingDesignOptionSource] = useState("");
@@ -349,6 +366,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
   const [optionCardLoadingText, setOptionCardLoadingText] = useState("正在生成选项卡");
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
   const activeConversationIdRef = useRef<string | null>(null);
+  const inFlightActionIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     void bootstrap();
@@ -420,7 +438,13 @@ export function AgentPage({ assetItems }: AgentPageProps) {
         })
         .filter((item): item is string => Boolean(item)),
     );
-    const pendingAction = actionItems.find((action) => action.status === "submitted" && action.result_job_id && !resultActionIds.has(action.id));
+    const pendingAction = actionItems.find(
+      (action) =>
+        action.status === "submitted" &&
+        action.result_job_id &&
+        !resultActionIds.has(action.id) &&
+        !inFlightActionIdsRef.current.has(action.id),
+    );
     if (!pendingAction?.result_job_id) return;
     const sourceUrl = getAssetPreviewUrl(pendingAction.source_assets[0]) ?? pendingAction.source_image_urls[0] ?? null;
     setProgressState("running");
@@ -674,6 +698,8 @@ export function AgentPage({ assetItems }: AgentPageProps) {
   }
 
   async function handleConfirmAction(action: AgentAction) {
+    if (inFlightActionIdsRef.current.has(action.id)) return;
+    inFlightActionIdsRef.current.add(action.id);
     setPendingDesignOptions([]);
     setDesignOtherText("");
     const sourceUrl = getAssetPreviewUrl(action.source_assets[0]) ?? action.source_image_urls[0] ?? null;
@@ -728,6 +754,8 @@ export function AgentPage({ assetItems }: AgentPageProps) {
           : current,
       );
       setError(message);
+    } finally {
+      inFlightActionIdsRef.current.delete(action.id);
     }
   }
 
@@ -792,6 +820,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
 
   function clearCurrentResultChoiceState() {
     setPendingRefineContext(null);
+    clearLocalRefineState();
     setPendingDesignOptions([]);
     setPendingDesignQuestion("");
     setPendingDesignOptionSource("");
@@ -810,6 +839,16 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     });
   }
 
+  function clearLocalRefineState() {
+    setPendingLocalRefineContext(null);
+    setLocalMarkupFile(null);
+    setLocalMarkupPreviewUrl((current) => {
+      if (current) URL.revokeObjectURL(current);
+      return null;
+    });
+    setLocalRefinePrompt("");
+  }
+
   function handleResultOption(option: AgentFlowOption, context: ResultOptionContext = {}) {
     if (context.messageId) {
       setConsumedResultMessageIds((current) => {
@@ -820,6 +859,17 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     }
     if (option.behavior === "draft_refine_prompt") {
       setPendingRefineContext(context);
+      return;
+    }
+    if (option.behavior === "local_refine") {
+      setPendingRefineContext(null);
+      setPendingLocalRefineContext(context);
+      setLocalMarkupFile(null);
+      setLocalMarkupPreviewUrl((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return null;
+      });
+      setLocalRefinePrompt("");
       return;
     }
     if (option.behavior === "regenerate_from_sources") {
@@ -853,6 +903,17 @@ export function AgentPage({ assetItems }: AgentPageProps) {
   }
 
   function handleRefineChoice(option: AgentFlowOption) {
+    if (option.behavior === "local_refine") {
+      setPendingLocalRefineContext(pendingRefineContext);
+      setPendingRefineContext(null);
+      setLocalMarkupFile(null);
+      setLocalMarkupPreviewUrl((current) => {
+        if (current) URL.revokeObjectURL(current);
+        return null;
+      });
+      setLocalRefinePrompt("");
+      return;
+    }
     const refs = getRefineAttachments(pendingRefineContext ?? {});
     setPendingRefineContext(null);
     if (option.prompt === "直接精修") {
@@ -861,6 +922,28 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     }
     setDraft(option.prompt);
     setPendingDraftAttachments(refs.length ? refs : null);
+  }
+
+  async function handleSubmitLocalRefine() {
+    if (!localMarkupFile || loading) {
+      setError(localMarkupFile ? null : "请先保存一张带标注的局部修改参考图。");
+      return;
+    }
+    try {
+      setError(null);
+      const uploaded = await uploadInputAsset(localMarkupFile, "ai_agent", "agent_local_refine_markup");
+      const markupRef: AgentAssetRef = {
+        asset_id: uploaded.id,
+        name: uploaded.name,
+        storage_url: uploaded.storage_url,
+        preview_url: uploaded.preview_url,
+      };
+      const promptText = localRefinePrompt.trim();
+      clearLocalRefineState();
+      await handleSend(`Agent精修：${promptText || "删除选中内容"}`, [markupRef]);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "局部修改提交失败");
+    }
   }
 
   function handleDesignOption(option: AgentDesignOption) {
@@ -897,12 +980,15 @@ export function AgentPage({ assetItems }: AgentPageProps) {
   });
   const isResultChoiceLocked = Boolean(
     pendingRefineContext ||
+      pendingLocalRefineContext ||
       (visibleActiveGeneration && (visibleActiveGeneration.resultUrl || visibleGenerationFailed)) ||
       (!visibleActiveGeneration && hasUnconsumedLatestResultOptions),
   );
   const isComposerLocked = isDesignChoiceLocked || isResultChoiceLocked;
   const shouldShowOptionCardLoading =
     Boolean(activeConversationId) && mode === "design" && loading && optionCardLoading && pendingDesignOptions.length === 0;
+  const localRefineSourceAsset = pendingLocalRefineContext?.resultAsset ?? latestGeneratedAsset ?? null;
+  const localRefineSourceUrl = getAssetPreviewUrl(localRefineSourceAsset);
 
   return (
     <div className="agent-chat-page">
@@ -1058,6 +1144,54 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                         <span>{option.helper}</span>
                       </button>
                     ))}
+                  </div>
+                </div>
+              </article>
+            ) : null}
+
+            {pendingLocalRefineContext ? (
+              <article className="agent-message assistant agent-options-message agent-refine-choice-message">
+                <div className="agent-refine-choice-card agent-local-refine-card">
+                  <div className="agent-refine-choice-head">
+                    <strong>局部修改</strong>
+                    <span>先在图上圈出要修改的位置，再提交给产品精修</span>
+                  </div>
+                  <LocalImageMarkupEditor
+                    sourceUrl={localRefineSourceUrl}
+                    sourceName={localRefineSourceAsset?.name}
+                    disabled={loading}
+                    onEditedFileChange={(file, previewUrl) => {
+                      setLocalMarkupFile(file);
+                      setLocalMarkupPreviewUrl((current) => {
+                        if (current && current !== previewUrl) URL.revokeObjectURL(current);
+                        return previewUrl;
+                      });
+                    }}
+                  />
+                  {localMarkupPreviewUrl ? (
+                    <div className="agent-local-refine-preview">
+                      <img src={localMarkupPreviewUrl} alt="局部修改标注预览" />
+                    </div>
+                  ) : null}
+                  <textarea
+                    className="agent-local-refine-input"
+                    value={localRefinePrompt}
+                    onChange={(event) => setLocalRefinePrompt(event.target.value)}
+                    placeholder="不填写时默认使用“删除选中内容”。也可以输入：把圈选区域改成爪镶、修平边缘、去掉多余金属等。"
+                    disabled={loading}
+                  />
+                  <div className="inline-action-row">
+                    <button
+                      className="primary-button compact-button"
+                      type="button"
+                      onClick={() => void handleSubmitLocalRefine()}
+                      disabled={loading || !localMarkupFile}
+                    >
+                      提交局部修改
+                    </button>
+                    <button className="secondary-button compact-button" type="button" onClick={clearLocalRefineState} disabled={loading}>
+                      取消
+                    </button>
                   </div>
                 </div>
               </article>
