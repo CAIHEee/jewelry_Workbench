@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -25,6 +26,7 @@ from app.services.cache_service import get_cache_service
 
 
 ACTIVE_JOB_STATUSES = ("queued", "running", "uploading")
+logger = logging.getLogger(__name__)
 
 
 class JobQueueService:
@@ -131,6 +133,7 @@ class JobQueueService:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"任务队列不可用: {exc}",
             ) from exc
+        logger.info("job_enqueued job_id=%s feature=%s model=%s", job_id, feature_key, model)
 
         return GenerationJobAccepted(
             job_id=job_id,
@@ -186,15 +189,24 @@ class JobQueueService:
             error_message=None,
             completed_at=completed_at,
         )
+        logger.info("job_succeeded job_id=%s", job_id)
 
     def mark_failed(self, job_id: str, error_message: str) -> None:
         completed_at = datetime.now(timezone.utc)
+        model = None
+        feature_key = None
+        with SessionLocal() as session:
+            job = session.get(GenerationJob, job_id)
+            if job is not None:
+                model = job.model
+                feature_key = job.feature_key
         self._update_job(
             job_id,
             status="failed",
             error_message=error_message[:4000],
             completed_at=completed_at,
         )
+        logger.warning("job_failed job_id=%s feature=%s model=%s error=%s", job_id, feature_key, model, error_message[:4000])
 
     def run_job(self, job_id: str) -> None:
         with SessionLocal() as session:

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AutoResizeTextarea } from "../components/AutoResizeTextarea";
 import { FloatingToast } from "../components/FloatingToast";
@@ -21,6 +21,7 @@ interface TextToImagePageProps {
 }
 
 const templates = getPromptTemplatesByModule("text-to-image");
+const preferredTextToImageModelId = "gemini-3.1-flash-image-preview";
 const progressPhases = [
   { at: 20, label: "整理提示词..." },
   { at: 42, label: "提交文生图请求..." },
@@ -38,7 +39,12 @@ const jobProgressLabels = {
 export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: TextToImagePageProps) {
   const { models, error: modelError, defaultModelId } = useModelCatalog((model) => model.supports_text_to_image);
   const [prompt, setPrompt] = useState("");
-  const [model, setModel] = useState(defaultModelId);
+  const resolvedDefaultModelId = useMemo(
+    () => models.find((item) => item.id === preferredTextToImageModelId)?.id ?? defaultModelId,
+    [defaultModelId, models],
+  );
+  const [model, setModel] = useState("");
+  const modelTouchedRef = useRef(false);
   const [aspectRatio, setAspectRatio] = useState("1:1");
   const [imageSize, setImageSize] = useState("1K");
   const [result, setResult] = useState<GenerationResult | null>(null);
@@ -54,9 +60,13 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
       return;
     }
     if (!model || !models.some((item) => item.id === model)) {
-      setModel(defaultModelId);
+      setModel(resolvedDefaultModelId);
+      return;
     }
-  }, [defaultModelId, model, models]);
+    if (!modelTouchedRef.current && model !== resolvedDefaultModelId) {
+      setModel(resolvedDefaultModelId);
+    }
+  }, [model, models, resolvedDefaultModelId]);
 
   useEffect(() => {
     if (result || selectedHistoryId || pageRuns.length === 0) {
@@ -137,7 +147,14 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
           <div className="form-card parameter-scroll-panel text-to-image-form compact-parameter-panel">
             <label className="input-group compact-input-group text-to-image-model-row">
               <span>模型</span>
-              <select value={model} onChange={(event) => setModel(event.target.value)} disabled={models.length === 0}>
+              <select
+                value={model}
+                onChange={(event) => {
+                  modelTouchedRef.current = true;
+                  setModel(event.target.value);
+                }}
+                disabled={models.length === 0}
+              >
                 {models.map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.label}

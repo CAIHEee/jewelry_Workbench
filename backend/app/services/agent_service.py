@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import logging
+import re
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
@@ -33,42 +38,41 @@ from app.services.asset_service import AssetService
 from app.services.job_queue_service import JobQueueService
 
 
-DEFAULT_IMAGE_MODEL = "gpt-image-2-all-apiyi"
+logger = logging.getLogger(__name__)
+
+DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
+DEFAULT_IMAGE_REGENERATE_MODEL = "gpt-image-2-all-apiyi"
+DEFAULT_GEMSTONE_DESIGN_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_SKETCH_TO_REALISTIC_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_TEXT_TO_IMAGE_PROMPT_SUFFIX = "高级珠宝产品渲染效果，背景干净，金属光泽真实，工艺细节清晰。"
 DESIGN_FRONT_VIEW_CONSTRAINT = (
     "必须生成完整的珠宝设计正视图，主体珠宝完整入画、居中展示，不裁切、不只展示局部特写，"
     "正面视角或近似正交正视图，完整呈现整体轮廓、结构比例、主石位置、镶嵌结构和全部关键设计细节。"
 )
-DEFAULT_GEMSTONE_DESIGN_PROMPT = (
-    "以参考图中的裸石/玉石为核心进行镶嵌珠宝设计，不改变裸石原始形状、颜色、大小比例与天然纹理。"
-    "根据裸石形态设计合理镶口与结构，可采用18K金、爪镶、包镶、围钻、花丝、镂空或对称布局，"
-    "突出裸石天然美感，结构可制作，细节完整，光影精致，高级珠宝产品设计渲染图。"
-)
-SKETCH_TO_REALISTIC_PROMPT = (
-    "将参考线稿图转换风格为现实写实成品图，玉石还原天然玉石翡翠的真实质感，天然玉石的温润光泽，"
-    "透光程度与自然纹理，无塑料感、玻璃感，颜色过渡自然，无过度饱和，需与参考图玉石颜色一致。"
-    "金属还原亮面抛光质感，边缘高光与阴影过渡自然，无过曝发黑、无CG感，精准复现参考图中的每一颗钻石，"
-    "呈现天然白钻的清晰刻面、真实火彩与颗粒分明的质感，棚拍光线、真实自然光影，成品图需与参考图的珠宝设计细节一致。"
-)
-MULTI_VIEW_PROMPT = (
-    "生成基于参考图的4个标准视角（正面、左侧、右侧、背面）并以2x2网格布局呈现，"
-    "所有视图与参考图的风格、材质及工艺细节保持一致，来自同一个连贯的三维模型。"
-)
-GRAYSCALE_PROMPT = (
-    "严格遵循参考图像：保持精确的3D结构、比例、透视以及所有雕塑细节。渲染为纯黏土模型："
-    "单色调哑光灰色材质，无金属反射，无宝石折射，无抛光，细节必须保持清晰。"
-)
-PRODUCT_REFINE_DEFAULT_PROMPT = (
-    "在保持原始设计结构和主体造型一致的前提下，对当前珠宝效果图进行产品级精修：优化金属抛光质感、"
-    "宝石通透度、钻石火彩、边缘高光、阴影层次和整体清晰度，修正轻微变形、脏污、过曝或塑料感，"
-    "背景保持干净，呈现真实高级珠宝棚拍效果。"
-)
-PRODUCT_REFINE_REMOVE_SELECTED_PROMPT = (
-    "以参考图为唯一依据进行局部修改：严格移除参考图中黄色线圈定/标注的区域，"
-    "移除后不在该位置补充、绘制任何新元素，也不修改周围的原有细节，"
-    "不新增、不改动、不添加任何其他内容，除了黄线区域的移除操作，画面其他部分保持100%不变。"
-)
+
+
+def _load_shared_prompt_templates() -> dict[str, dict[str, str]]:
+    template_path = Path(__file__).resolve().parents[3] / "shared" / "prompt_templates.json"
+    raw_items = json.loads(template_path.read_text(encoding="utf-8"))
+    return {str(item["id"]): item for item in raw_items}
+
+
+_PROMPT_TEMPLATES = _load_shared_prompt_templates()
+
+
+def _shared_prompt(template_id: str) -> str:
+    template = _PROMPT_TEMPLATES.get(template_id)
+    if not template:
+        raise KeyError(f"Missing shared prompt template: {template_id}")
+    return str(template["content"])
+
+
+DEFAULT_GEMSTONE_DESIGN_PROMPT = _shared_prompt("gemstone-design-cabochon")
+SKETCH_TO_REALISTIC_PROMPT = _shared_prompt("sketch-to-realistic-default")
+MULTI_VIEW_PROMPT = _shared_prompt("multi-view-jewelry-grid")
+GRAYSCALE_PROMPT = _shared_prompt("grayscale-relief-clay")
+PRODUCT_REFINE_DEFAULT_PROMPT = _shared_prompt("product-refine-jewelry-shot")
+PRODUCT_REFINE_REMOVE_SELECTED_PROMPT = _shared_prompt("product-refine-remove-yellow-markup")
 
 
 MODULE_RULES: dict[str, dict[str, Any]] = {
@@ -355,33 +359,57 @@ class AgentService:
         memories = self.list_memories(current_user=current_user, enabled_only=True)
         if conversation.mode == "design":
             design_attachments = normalized_attachments or self._load_design_source_assets(conversation)
+            design_state = self._load_json(conversation.state_json) or {}
+            direct_design_generate = self._is_ready_generate_design_option(content) and self._design_brief_has_generation_context(
+                dict(design_state.get("design_brief") or {}),
+                design_state.get("stone_analysis") if isinstance(design_state.get("stone_analysis"), dict) else None,
+            )
+            turn_started = perf_counter()
             design_task = asyncio.create_task(self._design_agent_result(
                 conversation=conversation,
                 current_user=current_user,
                 content=content,
                 attachments=design_attachments,
+                analyze_attachments=bool(normalized_attachments),
             ))
             streamed_reply = ""
             stream_buffer = ""
-            try:
-                async for delta in self._stream_design_visible_reply(
-                    conversation=conversation,
+            if direct_design_generate:
+                streamed_reply = self._build_design_immediate_reply(
                     content=content,
                     attachments=design_attachments,
-                ):
-                    streamed_reply += delta
-                    stream_buffer += delta
-                    chunks, stream_buffer = self._drain_stream_text_buffer(stream_buffer)
+                    has_new_attachments=bool(normalized_attachments),
+                )
+                for chunk in self._chunk_text(streamed_reply):
+                    yield ("message_delta", {"text": chunk})
+            else:
+                try:
+                    async for delta in self._stream_design_visible_reply(
+                        conversation=conversation,
+                        content=content,
+                        attachments=design_attachments,
+                    ):
+                        streamed_reply += delta
+                        stream_buffer += delta
+                        chunks, stream_buffer = self._drain_stream_text_buffer(stream_buffer)
+                        for chunk in chunks:
+                            yield ("message_delta", {"text": chunk})
+                except Exception:  # noqa: BLE001
+                    streamed_reply = ""
+                    stream_buffer = ""
+                if not streamed_reply.strip():
+                    streamed_reply = self._build_design_immediate_reply(
+                        content=content,
+                        attachments=design_attachments,
+                        has_new_attachments=bool(normalized_attachments),
+                    )
+                    for chunk in self._chunk_text(streamed_reply):
+                        yield ("message_delta", {"text": chunk})
+                elif stream_buffer:
+                    chunks, stream_buffer = self._drain_stream_text_buffer(stream_buffer, final=True)
                     for chunk in chunks:
                         yield ("message_delta", {"text": chunk})
-            except Exception:  # noqa: BLE001
-                streamed_reply = ""
-                stream_buffer = ""
-            if stream_buffer:
-                chunks, stream_buffer = self._drain_stream_text_buffer(stream_buffer, final=True)
-                for chunk in chunks:
-                    yield ("message_delta", {"text": chunk})
-            if not design_task.done():
+            if not design_task.done() and not direct_design_generate:
                 yield ("option_card_loading", {"message": "正在生成选项卡"})
             design_result = await design_task
             if streamed_reply.strip():
@@ -426,6 +454,14 @@ class AgentService:
                 content=content,
                 action=action_response,
                 attachments=normalized_attachments,
+            )
+            logger.info(
+                "agent_design_turn conversation_id=%s elapsed_ms=%d has_new_attachments=%s has_action=%s has_options=%s",
+                conversation_id,
+                int((perf_counter() - turn_started) * 1000),
+                bool(normalized_attachments),
+                bool(action_response),
+                bool(design_result.get("design_options")),
             )
             return
         deterministic_result = self._deterministic_workflow_result(conversation.mode, content, active_attachments)
@@ -584,6 +620,14 @@ class AgentService:
             action.updated_at = datetime.now(timezone.utc)
             session.commit()
             session.refresh(action)
+            logger.info(
+                "agent_action_submitted conversation_id=%s action_id=%s module=%s model=%s job_id=%s",
+                action.conversation_id,
+                action.id,
+                action.module_key,
+                (card.params or {}).get("model"),
+                accepted.job_id,
+            )
 
         return AgentActionConfirmResponse(
             action=self._action_to_schema(action),
@@ -680,6 +724,10 @@ class AgentService:
             state = self._load_json(record.state_json) or {}
             state["latest_generated_asset"] = result_ref.model_dump(mode="json")
             state["latest_generated_module"] = module_key
+            if action_record is not None:
+                action_params = self._load_json(action_record.params_json) or {}
+                if isinstance(action_params, dict) and action_params.get("model"):
+                    state["latest_generated_model"] = action_params.get("model")
             if action_id:
                 state["latest_generated_action_id"] = action_id
             recent_assets = state.get("recent_assets") if isinstance(state.get("recent_assets"), list) else []
@@ -770,17 +818,20 @@ class AgentService:
             ],
             "tools": tools,
             "tool_choice": "auto",
-            "temperature": 0.2,
+            "temperature": 0.45,
+            "max_tokens": 900,
         }
         try:
+            started = perf_counter()
             async with httpx.AsyncClient(timeout=self.settings.agent_llm_timeout_seconds) as client:
                 response = await client.post(
-                    f"{self.settings.agent_llm_base_url.rstrip('/')}/v1/chat/completions",
+                    self._chat_completions_url(self.settings.agent_llm_base_url),
                     headers={"Authorization": f"Bearer {self.settings.agent_llm_api_key}", "Content-Type": "application/json"},
                     json=payload,
                 )
                 response.raise_for_status()
                 body = response.json()
+            logger.info("agent_llm_call stage=workflow_plan elapsed_ms=%d", int((perf_counter() - started) * 1000))
         except Exception:  # noqa: BLE001
             return self._heuristic_agent_result(conversation.mode, content, attachments)
 
@@ -804,7 +855,8 @@ class AgentService:
             ],
             "tools": tools,
             "tool_choice": "auto",
-            "temperature": 0.2,
+            "temperature": 0.35,
+            "max_tokens": 900,
             "stream": True,
         }
         reply_parts: list[str] = []
@@ -812,7 +864,7 @@ class AgentService:
         async with httpx.AsyncClient(timeout=self.settings.agent_llm_timeout_seconds) as client:
             async with client.stream(
                 "POST",
-                f"{self.settings.agent_llm_base_url.rstrip('/')}/v1/chat/completions",
+                self._chat_completions_url(self.settings.agent_llm_base_url),
                 headers={"Authorization": f"Bearer {self.settings.agent_llm_api_key}", "Content-Type": "application/json"},
                 json=payload,
             ) as response:
@@ -995,49 +1047,114 @@ class AgentService:
         current_user: User,
         content: str,
         attachments: list[AgentAssetRef],
+        analyze_attachments: bool = True,
     ) -> dict[str, Any]:
+        started = perf_counter()
         state = self._load_json(conversation.state_json) or {}
         brief = dict(state.get("design_brief") or {})
+        original_brief = dict(brief)
         selected_cards = list(state.get("selected_knowledge_cards") or [])
         stone_analysis = state.get("stone_analysis") if isinstance(state.get("stone_analysis"), dict) else None
         pending_slot = str(state.get("pending_design_slot") or "")
+        previous_design_options = self._normalize_design_options(state.get("pending_design_options"))
         if attachments:
-            stone_analysis = await self._analyze_stones_or_fallback(attachments, content)
+            if analyze_attachments or not stone_analysis:
+                stone_started = perf_counter()
+                stone_analysis = await self._analyze_stones_or_fallback(attachments, content, current_user=current_user)
+                logger.info(
+                    "agent_design_stage stage=stone_analysis conversation_id=%s elapsed_ms=%d source=%s",
+                    conversation.id,
+                    int((perf_counter() - stone_started) * 1000),
+                    stone_analysis.get("source") if isinstance(stone_analysis, dict) else None,
+                )
             brief["stones"] = stone_analysis
             state["design_source_assets"] = [item.model_dump(mode="json") for item in attachments[:1]]
+        self._merge_design_content_into_brief(brief, content, pending_slot=pending_slot)
         knowledge_cards = self._search_jewelry_knowledge(content=content, brief=brief, stone_analysis=stone_analysis)
-        design_plan = await self._call_design_brief_llm(
-            content=content,
-            brief=brief,
-            stone_analysis=stone_analysis,
-            knowledge_cards=knowledge_cards,
-            has_design_source=bool(state.get("design_source_assets")),
-            pending_slot=pending_slot,
-        )
+        explicit_generate_intent = self._is_design_generate_intent(content)
+        continue_supplement_intent = self._is_design_continue_supplement_intent(content)
+        alternative_options_intent = self._is_design_alternative_options_intent(content)
+        design_plan = None
+        if not (self._is_ready_generate_design_option(content) and self._design_brief_has_generation_context(brief, stone_analysis)):
+            design_plan = await self._call_design_brief_llm(
+                content=content,
+                brief=brief,
+                stone_analysis=stone_analysis,
+                knowledge_cards=knowledge_cards,
+                has_design_source=bool(state.get("design_source_assets")),
+                pending_slot=pending_slot,
+                previous_options=previous_design_options,
+                alternative_options_requested=alternative_options_intent,
+            )
+        computed_missing_slots = self._missing_design_slots(brief, stone_analysis)
         if design_plan:
             brief = self._merge_llm_design_brief(brief, design_plan.get("design_brief"))
             if stone_analysis:
                 brief["stones"] = stone_analysis
-            should_generate = bool(design_plan.get("should_generate"))
-            missing_slots = self._coerce_slot_list(design_plan.get("missing_slots")) or self._missing_design_slots(brief, stone_analysis)
-            next_slot = str(design_plan.get("pending_design_slot") or (missing_slots[0] if missing_slots and not should_generate else "")).strip()
+            if stone_analysis and self._is_design_generate_intent(content):
+                self._autofill_design_brief(brief, knowledge_cards[:4], stone_analysis)
+            computed_missing_slots = self._missing_design_slots(brief, stone_analysis)
+            missing_slots = list(computed_missing_slots)
+            should_generate = explicit_generate_intent and not computed_missing_slots
+            llm_next_slot = str(design_plan.get("pending_design_slot") or "").strip()
+            next_slot = computed_missing_slots[0] if computed_missing_slots else ""
+            if should_generate:
+                next_slot = ""
             reply = str(design_plan.get("reply") or "").strip() or self._build_design_reply(brief, stone_analysis, should_generate, missing_slots)
             design_options = self._normalize_design_options(design_plan.get("options"))
+            if not next_slot:
+                design_options = []
+            elif llm_next_slot and llm_next_slot != next_slot:
+                design_options = []
+                reply = self._build_design_reply(brief, stone_analysis, should_generate, missing_slots)
+            if alternative_options_intent and previous_design_options:
+                design_options = self._exclude_previous_design_options(design_options, previous_design_options)
+            if alternative_options_intent and pending_slot in {"category", "concept", "gemstone", "metal", "style", "craft", "scene"}:
+                original_value = original_brief.get(pending_slot)
+                if original_value in (None, "", [], {}):
+                    brief.pop(pending_slot, None)
+                else:
+                    brief[pending_slot] = original_value
+                computed_missing_slots = self._missing_design_slots(brief, stone_analysis)
+                missing_slots = [pending_slot, *[item for item in computed_missing_slots if item != pending_slot]]
+                should_generate = False
+                next_slot = pending_slot
         else:
-            self._merge_design_content_into_brief(brief, content, pending_slot=pending_slot)
             if self._is_agent_autofill_intent(content):
                 self._autofill_design_brief(brief, knowledge_cards[:4], stone_analysis)
-            should_generate = self._is_design_generate_intent(content)
+            should_generate = explicit_generate_intent
+            if should_generate and stone_analysis:
+                self._autofill_design_brief(brief, knowledge_cards[:4], stone_analysis)
             missing_slots = self._missing_design_slots(brief, stone_analysis)
+            if missing_slots:
+                should_generate = False
             next_slot = missing_slots[0] if missing_slots and not should_generate else ""
             reply = self._build_design_reply(brief, stone_analysis, should_generate, missing_slots)
             design_options = []
+        if continue_supplement_intent:
+            should_generate = False
+            next_slot = ""
+            missing_slots = []
+            design_options = []
+            reply = self._build_design_continue_supplement_reply(brief, stone_analysis)
+        if not should_generate and not missing_slots and not next_slot and not continue_supplement_intent:
+            reply = self._build_design_ready_review_reply(brief, stone_analysis)
         if should_generate:
             design_options = []
             option_source = "none"
+        elif not missing_slots and not next_slot and not continue_supplement_intent:
+            option_source = "ready"
+            design_options = self._ready_to_generate_design_options()
+        elif continue_supplement_intent:
+            option_source = "none"
+            design_options = []
         elif not design_options:
             option_source = "fallback"
-            design_options = self._fallback_design_options(next_slot)
+            design_options = self._fallback_design_options(
+                next_slot,
+                brief=brief,
+                exclude_labels={item["label"] for item in previous_design_options} if alternative_options_intent else None,
+            )
         else:
             option_source = "llm"
         state["design_brief"] = brief
@@ -1076,11 +1193,11 @@ class AgentService:
                     "module_key": "gemstone_design",
                     "title": "裸石镶嵌设计",
                     "prompt": prompt,
-                    "params": {"model": DEFAULT_IMAGE_MODEL, "image_size": "1K", "strength": 0.75},
+                    "params": {"model": DEFAULT_GEMSTONE_DESIGN_MODEL, "image_size": "1K", "strength": 0.75},
                     "source_assets": [item.model_dump(mode="json") for item in source_assets[:1]],
                     "source_image_urls": [],
                     "editable_prompt": True,
-                    "next_question": "生成后可以重新生成、继续修改设计 brief，或结束。",
+                    "next_question": "生成后可以重新生成、继续调整设计摘要，或结束。",
                 }
             else:
                 result["action_card"] = {
@@ -1088,12 +1205,23 @@ class AgentService:
                     "module_key": "text_to_image",
                     "title": "设计出图",
                     "prompt": prompt,
-                    "params": {"model": DEFAULT_IMAGE_MODEL, "aspect_ratio": "1:1", "image_size": "1K"},
+                    "params": {
+                        "model": self._default_design_text_to_image_model(content),
+                        "aspect_ratio": "1:1",
+                        "image_size": "1K",
+                    },
                     "source_assets": [],
                     "source_image_urls": [],
                     "editable_prompt": True,
-                    "next_question": "生成后可以重新生成、继续修改设计 brief，或结束。",
+                    "next_question": "生成后可以重新生成、继续调整设计摘要，或结束。",
                 }
+        logger.info(
+            "agent_design_stage stage=design_result conversation_id=%s elapsed_ms=%d should_generate=%s option_source=%s",
+            conversation.id,
+            int((perf_counter() - started) * 1000),
+            bool(should_generate),
+            result.get("design_option_source"),
+        )
         return result
 
     def _save_conversation_state(self, conversation_id: str, state: dict[str, Any]) -> None:
@@ -1112,6 +1240,7 @@ class AgentService:
             "stone_analysis": state.get("stone_analysis"),
             "knowledge_cards": state.get("knowledge_cards") or [],
             "latest_design_mode": state.get("latest_design_mode") or "text_to_image",
+            "latest_generated_model": state.get("latest_generated_model"),
             "pending_design_options": state.get("pending_design_options") or [],
             "pending_design_question": state.get("pending_design_question"),
             "pending_design_option_source": state.get("pending_design_option_source") or "llm",
@@ -1126,6 +1255,8 @@ class AgentService:
         knowledge_cards: list[dict[str, object]],
         has_design_source: bool,
         pending_slot: str,
+        previous_options: list[dict[str, str]] | None = None,
+        alternative_options_requested: bool = False,
     ) -> dict[str, Any] | None:
         if not self.settings.agent_llm_api_key:
             return None
@@ -1142,21 +1273,28 @@ class AgentService:
                         knowledge_cards=knowledge_cards,
                         has_design_source=has_design_source,
                         pending_slot=pending_slot,
+                        previous_options=previous_options or [],
+                        alternative_options_requested=alternative_options_requested,
                     ),
                 },
             ],
-            "temperature": 0.1,
+            "temperature": 0.2,
+            "max_tokens": 700,
         }
+        if self._model_supports_thinking_toggle(self.settings.agent_llm_model):
+            payload["enable_thinking"] = False
         try:
+            started = perf_counter()
             async with httpx.AsyncClient(timeout=self.settings.agent_llm_timeout_seconds) as client:
                 response = await client.post(
-                    f"{self.settings.agent_llm_base_url.rstrip('/')}/v1/chat/completions",
+                    self._chat_completions_url(self.settings.agent_llm_base_url),
                     headers={"Authorization": f"Bearer {self.settings.agent_llm_api_key}", "Content-Type": "application/json"},
                     json=payload,
                 )
                 response.raise_for_status()
                 message = (response.json().get("choices") or [{}])[0].get("message") or {}
                 parsed = self._parse_json_object(str(message.get("content") or ""))
+                logger.info("agent_llm_call stage=design_brief elapsed_ms=%d", int((perf_counter() - started) * 1000))
                 return parsed if isinstance(parsed, dict) else None
         except Exception:  # noqa: BLE001
             return None
@@ -1185,12 +1323,16 @@ class AgentService:
                 },
             ],
             "temperature": 0.2,
+            "max_tokens": 120,
             "stream": True,
         }
+        if self._model_supports_thinking_toggle(self.settings.agent_llm_model):
+            payload["enable_thinking"] = False
+        payload["stream_options"] = {"include_usage": True}
         async with httpx.AsyncClient(timeout=self.settings.agent_llm_timeout_seconds) as client:
             async with client.stream(
                 "POST",
-                f"{self.settings.agent_llm_base_url.rstrip('/')}/v1/chat/completions",
+                self._chat_completions_url(self.settings.agent_llm_base_url),
                 headers={"Authorization": f"Bearer {self.settings.agent_llm_api_key}", "Content-Type": "application/json"},
                 json=payload,
             ) as response:
@@ -1210,12 +1352,22 @@ class AgentService:
                     if text:
                         yield text
 
+    def _build_design_immediate_reply(self, *, content: str, attachments: list[AgentAssetRef], has_new_attachments: bool) -> str:
+        if self._is_ready_generate_design_option(content):
+            return "收到，我开始整理最终设计提示词。"
+        if has_new_attachments:
+            return "已收到裸石/参考图，我先识别图片特征并整理设计摘要。"
+        if attachments:
+            return "我会沿用已绑定的裸石/参考图，继续更新当前设计摘要。"
+        return "收到，我先整理你的设计意图和下一步选项。"
+
     def _build_design_visible_reply_system_prompt(self) -> str:
         return (
             "你是金马珠宝内部的设计出图 Agent。你正在对话窗口直接回复设计师，必须输出自然中文正文。"
             "不要输出 JSON、Markdown 表格、代码块或工具调用。"
-            "你的职责只是先给出简短承接，说明正在整理当前 brief 和下一步选择。"
+            "你的职责只是先给出简短承接，说明正在整理当前设计摘要和下一步选择。"
             "不要追问具体设计问题，不要提出具体选项，不要要求用户回答某个槽位；这些会由后续选项卡统一承载。"
+            "不要总是重复固定句式，要根据本轮输入自然承接。"
             "回复控制在 20-60 个中文字符。"
         )
 
@@ -1241,18 +1393,22 @@ class AgentService:
 
     def _build_design_brief_system_prompt(self) -> str:
         return (
-            "你是金马珠宝内部的设计出图 Agent，负责和设计师问诊并维护结构化设计 brief。\n"
+            "你是金马珠宝内部的设计出图 Agent，负责和设计师问诊并维护结构化设计摘要。\n"
             "你必须只输出 JSON 对象，不要输出 Markdown、解释或代码块。\n"
-            "任务：根据用户本轮输入、已有 brief、裸石分析和专业词库建议，更新 brief 槽位，并判断是否应该提交生成。\n"
+            "任务：根据用户本轮输入、已有设计摘要、裸石分析和专业词库建议，更新槽位，并判断是否应该提交生成。\n"
             "允许槽位：category, concept, gemstone, metal, style, craft, scene, supplement, knowledge_summary。\n"
             "规则：\n"
             "1. 不要把用户的泛指句误当成设计理念。例如“这是我要设计镶嵌的裸石”只表示上传图片是裸石来源，不是 concept。\n"
             "2. 用户短答通常是在回答上一轮 pending_design_slot，例如只说“18k”应填 metal=18K金。\n"
             "3. 只有用户明确要求生成/出图/重新生成/直接生成/开始生成时，should_generate 才为 true；普通修改、补充、讨论不要生成。\n"
-            "4. 如果用户要求 Agent 补全，可以基于专业珠宝常识和词库补足缺失槽位，但要保持可制作、专业、克制。\n"
-            "5. 每次最多追问一个最关键问题；信息足够时提示可生成首版设计图。\n"
-            "6. 如果还需要用户补充，必须给出 2-4 个适合当前问题的选项 options，选项要短、专业、可直接作为用户回答；不要包含“其他”，前端会固定添加。\n"
-            "7. 有裸石来源时，生成路线是 gemstone_design；无裸石来源时是 text_to_image，但你只需要返回 latest_design_mode 字段。\n"
+            "4. 无参考图的纯文生图流程中，gemstone 槽位必须明确追问或明确补全；主石/宝石未明确时，不得跳过，不得直接生成。\n"
+            "5. 如果用户要求 Agent 补全，可以基于专业珠宝常识和词库补足缺失槽位，但要保持可制作、专业、克制。\n"
+            "6. 每次最多追问一个最关键问题；信息足够时提示可生成首版设计图。\n"
+            "7. 如果还需要用户补充，必须给出 2-4 个适合当前问题的选项 options，选项要短、专业、可直接作为用户回答；不要包含“其他”，前端会固定添加。\n"
+            "8. 选项必须结合当前品类、风格、场景、设计理念和词库候选动态生成，不要每轮都重复固定模板；尤其 gemstone 槽位不要总是返回同一组翡翠选项，要像设计师灵感助手一样给出更贴合当前方向的分叉。\n"
+            "9. 本业务默认以翡翠/玉石设计为主。若用户没有明确指定钻石、红宝石、蓝宝石、祖母绿等非玉石主石，则 gemstone 槽位默认按翡翠路线追问，优先给出翡翠种水、颜色、形制、数量相关选项，但要根据当前上下文灵活变化，不要返回泛彩宝选项。\n"
+            "10. 如果用户说“推荐别的”“换一批”“还有其他选择”等，表示他要新的候选方向，不是在回答当前槽位。此时要保持 pending_design_slot 不变，并返回一组不同于上一轮的新 options，避免重复上一轮选项。\n"
+            "11. 有裸石来源时，生成路线是 gemstone_design；无裸石来源时是 text_to_image，但你只需要返回 latest_design_mode 字段。\n"
             "JSON 格式："
             '{"design_brief": {"category": null, "concept": null, "gemstone": null, "metal": null, "style": null, "craft": null, "scene": null, "supplement": null, "knowledge_summary": null}, '
             '"missing_slots": ["category"], "pending_design_slot": "category", "should_generate": false, '
@@ -1269,19 +1425,27 @@ class AgentService:
         knowledge_cards: list[dict[str, object]],
         has_design_source: bool,
         pending_slot: str,
+        previous_options: list[dict[str, str]],
+        alternative_options_requested: bool,
     ) -> str:
         knowledge_text = "\n".join(
             f"- {card.get('category')}: {card.get('content') or card.get('title')}"
             for card in knowledge_cards[:6]
         )
+        previous_options_text = "\n".join(
+            f"- {item.get('label')}: {item.get('value')} / {item.get('description') or ''}"
+            for item in previous_options[:6]
+        )
         return (
             f"用户本轮输入：{content or '用户只上传/选择了图片，没有文字'}\n"
             f"是否已有裸石/参考图来源：{has_design_source}\n"
             f"上一轮正在追问的槽位：{pending_slot or '无'}\n"
-            f"当前 brief：{json.dumps(brief, ensure_ascii=False)}\n"
+            f"用户本轮是否明确要求换一批候选：{alternative_options_requested}\n"
+            f"上一轮已展示过的选项：\n{previous_options_text or '无'}\n"
+            f"当前设计摘要：{json.dumps(brief, ensure_ascii=False)}\n"
             f"裸石视觉分析/降级分析：{json.dumps(stone_analysis or {}, ensure_ascii=False)}\n"
             f"专业词库候选：\n{knowledge_text or '无'}\n"
-            "请返回合并后的完整 brief。未知槽位填 null，不要编造用户没有表达且不需要 Agent 补全的内容。"
+            "请返回合并后的完整设计摘要。未知槽位填 null，不要编造用户没有表达且不需要 Agent 补全的内容。"
         )
 
     def _parse_json_object(self, text: str) -> dict[str, Any] | None:
@@ -1314,8 +1478,52 @@ class AgentService:
                 continue
             if value in (None, "", [], {}):
                 continue
+            if self._should_preserve_current_design_brief_value(key, merged.get(key), value):
+                continue
             merged[key] = value
         return merged
+
+    def _should_preserve_current_design_brief_value(self, key: str, current_value: object, incoming_value: object) -> bool:
+        if current_value in (None, "", [], {}) or key in {"knowledge_summary", "stones"}:
+            return False
+        current_text = str(current_value).strip()
+        incoming_text = str(incoming_value).strip()
+        if not current_text or not incoming_text:
+            return False
+        if current_text == incoming_text:
+            return True
+        if key == "gemstone":
+            current_generic = self._is_generic_gemstone_brief_value(current_text)
+            incoming_generic = self._is_generic_gemstone_brief_value(incoming_text)
+            if current_generic and incoming_generic:
+                return len(incoming_text) <= len(current_text)
+            if current_generic and not incoming_generic:
+                return False
+            return True
+        return True
+
+    def _is_generic_gemstone_brief_value(self, value: str) -> bool:
+        normalized = value.strip().replace("，", " ").replace("。", " ").replace("；", " ")
+        if not normalized:
+            return True
+        generic_values = {
+            "翡翠",
+            "玉",
+            "玉石",
+            "裸石",
+            "宝石",
+            "钻石",
+            "裸石图片",
+            "这块玉",
+            "这块裸石",
+            "主石可按设计理念选择",
+        }
+        if normalized in generic_values:
+            return True
+        profile = self._extract_jade_profile_from_text(normalized)
+        if any(profile.values()):
+            return False
+        return len(normalized) <= 4
 
     def _coerce_slot_list(self, value: object) -> list[str]:
         allowed = {"category", "concept", "gemstone", "metal", "style", "craft", "scene"}
@@ -1338,9 +1546,45 @@ class AgentService:
             items.append({"label": label[:24], "value": option_value[:120], "description": description[:120]})
         return items[:4]
 
-    def _fallback_design_options(self, pending_slot: str) -> list[dict[str, str]]:
+    def _exclude_previous_design_options(
+        self,
+        options: list[dict[str, str]],
+        previous_options: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        previous_keys = {
+            (item.get("label") or "").strip().lower()
+            for item in previous_options
+            if (item.get("label") or "").strip()
+        }
+        previous_keys.update(
+            {
+                (item.get("value") or "").strip().lower()
+                for item in previous_options
+                if (item.get("value") or "").strip()
+            }
+        )
+        filtered = [
+            item
+            for item in options
+            if (item.get("label") or "").strip().lower() not in previous_keys
+            and (item.get("value") or "").strip().lower() not in previous_keys
+        ]
+        return filtered[:4]
+
+    def _fallback_design_options(
+        self,
+        pending_slot: str,
+        *,
+        brief: dict[str, Any] | None = None,
+        exclude_labels: set[str] | None = None,
+    ) -> list[dict[str, str]]:
+        if pending_slot == "gemstone":
+            jade_options = self._build_jade_gemstone_options(brief or {}, exclude_labels=exclude_labels)
+            if jade_options:
+                return jade_options
         presets: dict[str, list[tuple[str, str]]] = {
             "category": [("吊坠", "适合突出裸石主体"), ("戒指", "更强调佩戴和展示"), ("手链", "适合轻量日常款")],
+            "gemstone": [("冰种翡翠", "默认按翡翠路线推进，强调种水和通透感"), ("白冰翡翠", "清冷干净，适合白金或铂金"), ("飘花翡翠", "更自然、更东方，适合题材款"), ("紫罗兰翡翠", "柔和温润，适合玫瑰金路线")],
             "style": [("自然", "强调裸石天然感"), ("复古", "更有装饰性和故事感"), ("几何", "线条清晰，更现代")],
             "metal": [("18K金", "经典稳妥"), ("玫瑰金", "柔和暖调"), ("白金", "清爽现代")],
             "craft": [("爪镶", "露出更多裸石"), ("包镶", "保护性更强"), ("围钻", "提升华丽度")],
@@ -1349,6 +1593,210 @@ class AgentService:
         return [
             {"label": label, "value": label, "description": description}
             for label, description in presets.get(pending_slot, [])
+            if not exclude_labels or label not in exclude_labels
+        ]
+
+    def _build_jade_gemstone_options(self, brief: dict[str, Any], *, exclude_labels: set[str] | None = None) -> list[dict[str, str]]:
+        jade_cards = self._knowledge_cards_by_section_prefix("6.")
+        if not jade_cards:
+            return []
+        category = str(brief.get("category") or "").strip()
+        title_map = {
+            str(card.get("title") or "").strip(): card
+            for card in jade_cards
+            if str(card.get("title") or "").strip()
+        }
+
+        def choose_title(*candidates: str, default: str) -> str:
+            for candidate in candidates:
+                if candidate in title_map:
+                    return candidate
+            return default
+
+        if category in {"吊坠", "项链"}:
+            specs = [
+                (
+                    "冰种蛋面单坠",
+                    f"主石用单颗{choose_title('冰种', default='冰种')}翡翠{choose_title('蛋面', default='蛋面')}，做项链吊坠",
+                    "清透水润，适合简洁高级的日常佩戴款",
+                ),
+                (
+                    "白冰水滴单坠",
+                    f"主石用单颗{choose_title('白冰', default='白冰')}翡翠{choose_title('水滴', default='水滴')}，做项链吊坠",
+                    "清冷干净，垂坠感更明确",
+                ),
+                (
+                    "飘花叶子单坠",
+                    f"主石用单颗{choose_title('飘花', default='飘花')}翡翠{choose_title('叶子', default='叶子')}，做项链吊坠",
+                    "自然东方气质更强，题材感明确",
+                ),
+                (
+                    "福豆三石款",
+                    f"主石方向用{choose_title('福豆', default='福豆')}题材，三颗豆粒造型，做项链吊坠",
+                    "直接带出玉石数量和寓意，适合礼赠路线",
+                ),
+                (
+                    "紫罗兰蛋面单坠",
+                    f"主石用单颗{choose_title('紫罗兰', default='紫罗兰')}翡翠{choose_title('蛋面', default='蛋面')}，做项链吊坠",
+                    "色调柔和偏浪漫，适合女性化路线",
+                ),
+                (
+                    "晴水平安扣单坠",
+                    f"主石用单颗{choose_title('晴水', default='晴水')}翡翠{choose_title('平安扣', default='平安扣')}，做项链吊坠",
+                    "更克制耐看，适合日常高级感路线",
+                ),
+            ]
+        elif category == "戒指":
+            specs = [
+                (
+                    "冰种蛋面戒",
+                    f"主石用单颗{choose_title('冰种', default='冰种')}翡翠{choose_title('蛋面', default='蛋面')}，做戒指",
+                    "最稳妥的高频翡翠戒指路线",
+                ),
+                (
+                    "阳绿蛋面戒",
+                    f"主石用单颗阳绿色翡翠{choose_title('蛋面', default='蛋面')}，做戒指",
+                    "突出颜色表现，适合高级感路线",
+                ),
+                (
+                    "白冰双石戒",
+                    f"主石用两颗{choose_title('白冰', default='白冰')}小翡翠双石组合，做戒指",
+                    "更轻盈现代，也把数量信息补齐",
+                ),
+                (
+                    "马鞍男戒",
+                    f"主石用单颗{choose_title('马鞍戒面', default='马鞍戒面')}翡翠，做戒指",
+                    "更厚重，适合中性或男款方向",
+                ),
+                (
+                    "紫罗兰花头戒",
+                    f"主石用单颗{choose_title('紫罗兰', default='紫罗兰')}翡翠{choose_title('蛋面', default='蛋面')}，做花头戒指",
+                    "更华丽柔美，适合精致礼赠路线",
+                ),
+                (
+                    "墨翠中性戒",
+                    f"主石用单颗{choose_title('墨翠', default='墨翠')}翡翠，做中性戒指",
+                    "对比更强，适合简洁力量感路线",
+                ),
+            ]
+        elif category in {"耳环", "耳坠", "耳饰"}:
+            specs = [
+                (
+                    "白冰水滴耳坠",
+                    f"主石用一对{choose_title('白冰', default='白冰')}翡翠{choose_title('水滴', default='水滴')}，做耳坠",
+                    "清冷轻盈，适合现代通勤路线",
+                ),
+                (
+                    "飘花叶子耳饰",
+                    f"主石用一对{choose_title('飘花', default='飘花')}翡翠{choose_title('叶子', default='叶子')}，做耳饰",
+                    "更自然灵动，适合东方题材路线",
+                ),
+                (
+                    "紫罗兰蛋面耳钉",
+                    f"主石用一对{choose_title('紫罗兰', default='紫罗兰')}翡翠{choose_title('蛋面', default='蛋面')}，做耳钉",
+                    "柔和精致，适合轻礼服路线",
+                ),
+                (
+                    "满绿无事牌耳坠",
+                    f"主石用一对满绿色翡翠无事牌，做耳坠",
+                    "色彩存在感强，适合大气礼服路线",
+                ),
+                (
+                    "冰种飘花蛋面耳坠",
+                    f"主石用一对冰种飘花翡翠蛋面，做耳坠",
+                    "活泼灵动，适合时髦佩戴路线",
+                ),
+                (
+                    "晴水小平安扣耳饰",
+                    f"主石用一对{choose_title('晴水', default='晴水')}翡翠{choose_title('平安扣', default='平安扣')}，做耳饰",
+                    "更克制含蓄，适合日常高级路线",
+                ),
+            ]
+        else:
+            specs = [
+                (
+                    "冰种单颗蛋面",
+                    f"主石用单颗{choose_title('冰种', default='冰种')}翡翠{choose_title('蛋面', default='蛋面')}",
+                    "适合大多数品类，先把种水和形制定下来",
+                ),
+                (
+                    "白冰单颗水滴",
+                    f"主石用单颗{choose_title('白冰', default='白冰')}翡翠{choose_title('水滴', default='水滴')}",
+                    "更清冷，也方便后续做吊坠或耳坠",
+                ),
+                (
+                    "飘花随形单石",
+                    f"主石用单颗{choose_title('飘花', default='飘花')}翡翠{choose_title('随形', default='随形')}",
+                    "自然感更强，适合东方题材或艺术款",
+                ),
+                (
+                    "福豆三颗题材",
+                    f"主石方向用{choose_title('福豆', default='福豆')}题材，三颗豆粒造型",
+                    "把数量和题材一起确定下来",
+                ),
+                (
+                    "紫罗兰单颗蛋面",
+                    f"主石用单颗{choose_title('紫罗兰', default='紫罗兰')}翡翠{choose_title('蛋面', default='蛋面')}",
+                    "更柔和浪漫，也适合偏礼赠路线",
+                ),
+                (
+                    "晴水单颗平安扣",
+                    f"主石用单颗{choose_title('晴水', default='晴水')}翡翠{choose_title('平安扣', default='平安扣')}",
+                    "更温润克制，适合现代东方路线",
+                ),
+            ]
+
+        return [
+            {"label": label[:24], "value": value[:120], "description": description[:120]}
+            for label, value, description in specs
+            if not exclude_labels or label not in exclude_labels
+        ]
+
+    def _should_force_jade_gemstone_options(
+        self,
+        *,
+        content: str,
+        brief: dict[str, Any],
+        stone_analysis: dict[str, object] | None,
+    ) -> bool:
+        if stone_analysis:
+            return False
+        text = " ".join(
+            str(item)
+            for item in [
+                content,
+                brief.get("gemstone"),
+                brief.get("concept"),
+                brief.get("supplement"),
+            ]
+            if item
+        ).lower()
+        jade_markers = ("翡翠", "玉", "玉石", "和田玉", "墨翠", "白冰", "飘花", "紫罗兰", "晴水", "蓝水", "福豆", "叶子", "平安扣")
+        non_jade_markers = ("钻石", "红宝石", "蓝宝石", "祖母绿", "珍珠", "彩宝", "碧玺", "欧泊", "海蓝宝", "坦桑石", "尖晶石")
+        if any(marker in text for marker in non_jade_markers) and not any(marker in text for marker in jade_markers):
+            return False
+        return True
+
+    def _knowledge_cards_by_section_prefix(self, prefix: str) -> list[dict[str, object]]:
+        normalized_prefix = prefix.strip()
+        return [
+            card
+            for card in self._load_jewelry_term_cards()
+            if str(card.get("category") or "").strip().startswith(normalized_prefix)
+        ]
+
+    def _ready_to_generate_design_options(self) -> list[dict[str, str]]:
+        return [
+            {
+                "label": "生成首版设计图",
+                "value": "生成首版设计图",
+                "description": "使用当前设计摘要和裸石来源直接出第一版",
+            },
+            {
+                "label": "继续补充设计要求",
+                "value": "继续补充设计要求",
+                "description": "先不生成，继续补充设计理念、工艺或场景细节",
+            },
         ]
 
     async def _build_design_generation_prompt(
@@ -1362,6 +1810,12 @@ class AgentService:
         has_design_source: bool,
     ) -> str:
         conversation_context = self._load_recent_message_context(conversation_id)
+        fallback_prompt = self._build_design_prompt(
+            brief=brief,
+            selected_cards=selected_cards,
+            stone_analysis=stone_analysis,
+            content=content,
+        )
         llm_prompt = await self._call_design_generation_prompt_llm(
             conversation_context=conversation_context,
             brief=brief,
@@ -1370,11 +1824,9 @@ class AgentService:
             content=content,
             has_design_source=has_design_source,
         )
-        if llm_prompt:
+        if llm_prompt and self._is_safe_design_generation_prompt(llm_prompt):
             return self._ensure_design_front_view_constraint(llm_prompt)
-        return self._ensure_design_front_view_constraint(
-            self._build_design_prompt(brief=brief, selected_cards=selected_cards, stone_analysis=stone_analysis, content=content)
-        )
+        return self._ensure_design_front_view_constraint(fallback_prompt)
 
     async def _call_design_generation_prompt_llm(
         self,
@@ -1399,10 +1851,12 @@ class AgentService:
                 {
                     "role": "system",
                     "content": (
-                        "你是珠宝 AI 生图提示词工程师。你的任务是把设计师对话上下文、结构化 brief、裸石分析和专业词库，"
+                        "你是珠宝 AI 生图提示词工程师。你的任务是把设计师对话上下文、结构化设计摘要、裸石分析和专业词库，"
                         "总结成一段可直接发给生图模型的最终 prompt。\n"
                         "要求：只输出最终 prompt 文本，不要 JSON、Markdown、标题、解释。\n"
                         "不要把专业参考原文、表格、英文术语堆砌进去，要吸收后改写成自然的珠宝设计描述。\n"
+                        "禁止出现这些元信息或文档说明：提示词、文生图、模型、本文档、表格、专业参考、候选、JSON、Markdown、英文名称、Prompt、用于优化。\n"
+                        "禁止输出英文逗号词串、Markdown 引用符号 >、竖线表格、项目符号列表。\n"
                         "prompt 必须结构清晰：主体品类、主石/裸石约束、金属材质、镶嵌工艺、风格语言、比例结构、画面质感。\n"
                         "如果是裸石镶嵌，必须强调：不改变裸石原始形状、颜色、大小比例、天然纹理，以裸石为核心设计镶口和结构。\n"
                         f"必须包含这个硬性构图要求：{DESIGN_FRONT_VIEW_CONSTRAINT}\n"
@@ -1415,24 +1869,29 @@ class AgentService:
                         f"生成模式：{mode_hint}\n"
                         f"最近对话上下文：\n{conversation_context or '无'}\n"
                         f"当前用户生成指令：{content or '生成首版设计图'}\n"
-                        f"结构化 brief：{self._format_design_brief_for_prompt(brief)}\n"
+                        f"结构化设计摘要：{self._format_design_brief_for_prompt(brief)}\n"
                         f"裸石分析：{self._format_design_brief_for_prompt(stone_analysis or {})}\n"
                         f"可参考的专业知识候选：\n{knowledge_text or '无'}"
                     ),
                 },
             ],
-            "temperature": 0.25,
+            "temperature": 0.4,
+            "max_tokens": 520,
         }
+        if self._model_supports_thinking_toggle(self.settings.agent_llm_model):
+            payload["enable_thinking"] = False
         try:
+            started = perf_counter()
             async with httpx.AsyncClient(timeout=self.settings.agent_llm_timeout_seconds) as client:
                 response = await client.post(
-                    f"{self.settings.agent_llm_base_url.rstrip('/')}/v1/chat/completions",
+                    self._chat_completions_url(self.settings.agent_llm_base_url),
                     headers={"Authorization": f"Bearer {self.settings.agent_llm_api_key}", "Content-Type": "application/json"},
                     json=payload,
                 )
                 response.raise_for_status()
                 message = (response.json().get("choices") or [{}])[0].get("message") or {}
                 prompt = self._strip_prompt_text(str(message.get("content") or ""))
+                logger.info("agent_llm_call stage=design_prompt elapsed_ms=%d", int((perf_counter() - started) * 1000))
                 return prompt if prompt else None
         except Exception:  # noqa: BLE001
             return None
@@ -1461,12 +1920,62 @@ class AgentService:
             stripped = stripped.strip("`").strip()
             if stripped.lower().startswith(("text", "prompt", "markdown")):
                 stripped = stripped.split("\n", 1)[-1].strip()
+        stripped = stripped.replace(">", " ").replace("|", " ").replace("`", " ")
+        stripped = stripped.replace("Prompt:", " ").replace("prompt:", " ")
         return " ".join(stripped.split())
 
     def _clean_prompt_fragment(self, text: str) -> str:
         cleaned = text.replace("|", " ").replace("`", " ")
+        cleaned = cleaned.replace(">", " ")
+        blocked_fragments = (
+            "本文档用于",
+            "优化文生图模型",
+            "提示词质量",
+            "提示词示例",
+            "中文名称",
+            "英文名称",
+            "适用场景",
+            "用途：",
+            "Prompt Templates",
+            "常见文生图模型",
+        )
+        for fragment in blocked_fragments:
+            cleaned = cleaned.replace(fragment, " ")
+        cleaned = re.sub(r"\b(?!18K\b|24K\b|14K\b)[A-Za-z][A-Za-z0-9+/&.,' -]{2,}\b", " ", cleaned)
         cleaned = " ".join(cleaned.split())
-        return cleaned[:160]
+        return cleaned[:80]
+
+    def _is_safe_design_generation_prompt(self, prompt: str) -> bool:
+        if not prompt.strip():
+            return False
+        blocked = (
+            "本文档",
+            "文生图模型",
+            "提示词质量",
+            "提示词示例",
+            "专业参考",
+            "候选",
+            "Markdown",
+            "JSON",
+            "Prompt",
+            "prompt",
+            "表格",
+            "英文名称",
+            "用于优化",
+            "gold-silver",
+            "Gold-Silver",
+            "metal inlay work",
+            "Metal Inlay",
+            "本文档用于优化",
+        )
+        if any(item in prompt for item in blocked):
+            return False
+        if any(mark in prompt for mark in ["|", "```", "\n-", "\n*"]):
+            return False
+        ascii_letters = sum(1 for char in prompt if ("a" <= char.lower() <= "z"))
+        if ascii_letters > max(40, len(prompt) * 0.18):
+            return False
+        return True
 
     def _ensure_design_front_view_constraint(self, prompt: str) -> str:
         stripped = prompt.strip()
@@ -1475,8 +1984,17 @@ class AgentService:
         return f"{stripped} {DESIGN_FRONT_VIEW_CONSTRAINT}"
 
     def _merge_design_content_into_brief(self, brief: dict[str, Any], content: str, *, pending_slot: str = "") -> None:
-        stripped = content.strip()
-        if not stripped or self._is_design_generate_intent(stripped) or self._is_agent_autofill_intent(stripped):
+        stripped = self._strip_design_generate_phrases(content.strip())
+        if not stripped or self._is_agent_autofill_intent(stripped) or self._is_design_alternative_options_intent(stripped):
+            return
+        revision_intents = self._extract_design_revision_intents(stripped)
+        if revision_intents["updates"] or revision_intents["clears"] or revision_intents["autofill_slots"]:
+            for slot, value in revision_intents["updates"].items():
+                brief[slot] = self._normalize_design_slot_value(slot, value)
+            for slot in revision_intents["clears"]:
+                brief.pop(slot, None)
+            for slot in revision_intents["autofill_slots"]:
+                brief.pop(slot, None)
             return
         lowered = stripped.lower()
         if pending_slot in {"category", "concept", "gemstone", "metal", "style", "craft", "scene"} and len(stripped) <= 36:
@@ -1485,7 +2003,7 @@ class AgentService:
         category = self._first_matching_phrase(stripped, ["戒指", "吊坠", "项链", "耳环", "耳坠", "胸针", "手镯", "手链"])
         if category:
             brief["category"] = category
-        style = self._first_matching_phrase(stripped, ["Art Deco", "art deco", "复古", "现代", "中式", "东方", "宫廷", "极简", "自然", "新中式"])
+        style = self._first_matching_phrase(stripped, ["Art Deco", "art deco", "复古", "现代", "中式", "东方", "宫廷", "极简", "自然", "新中式", "轻奢", "法式", "华丽", "简约"])
         if style:
             brief["style"] = "Art Deco" if style.lower() == "art deco" else style
         metal = self._first_matching_phrase(stripped, ["18K金", "18k金", "18K", "18k", "玫瑰金", "黄金", "白金", "铂金", "银", "K金"])
@@ -1500,7 +2018,17 @@ class AgentService:
         scene = self._first_matching_phrase(stripped, ["日常", "通勤", "婚礼", "礼服", "商务", "收藏", "展会", "晚宴"])
         if scene:
             brief["scene"] = scene
-        if lowered not in {"整理设计理念", "生成首版设计图", "优化提示词"}:
+        upload_reference_markers = (
+            "这是我要设计镶嵌的裸石",
+            "这是我要设计的裸石",
+            "这是我要镶嵌的裸石",
+            "这是裸石",
+            "围绕这块玉",
+            "围绕这块裸石",
+            "这块玉",
+            "这块裸石",
+        )
+        if lowered not in {"整理设计理念", "生成首版设计图", "优化提示词"} and not any(marker in stripped for marker in upload_reference_markers):
             brief["concept"] = stripped
             if not any([category, style, metal, gemstone, craft, scene]):
                 previous = str(brief.get("supplement") or "")
@@ -1510,7 +2038,129 @@ class AgentService:
         stripped = value.strip()
         if slot == "metal" and stripped.lower() in {"18k", "18k金"}:
             return "18K金"
+        if slot == "style":
+            style_aliases = {
+                "轻奢风": "轻奢",
+                "现代风": "现代",
+                "复古风": "复古",
+                "极简风": "极简",
+                "新中式风": "新中式",
+            }
+            return style_aliases.get(stripped, stripped)
         return stripped
+
+    def _extract_explicit_design_slot_updates(self, content: str) -> dict[str, str]:
+        return self._extract_design_revision_intents(content)["updates"]
+
+    def _extract_design_revision_intents(self, content: str) -> dict[str, Any]:
+        slot_keywords = {
+            "category": ("品类", "类别", "款式"),
+            "gemstone": ("主石", "玉石", "翡翠", "裸石", "宝石"),
+            "metal": ("材质", "金属"),
+            "style": ("风格",),
+            "craft": ("工艺", "镶嵌", "镶嵌工艺"),
+            "scene": ("场景", "佩戴场景", "使用场景"),
+            "concept": ("理念", "设计理念", "主题"),
+            "supplement": ("补充说明", "补充要求", "补充", "备注", "说明"),
+        }
+        update_markers = ("改成", "改为", "换成", "换为", "调整为", "设为", "定为")
+        clear_markers = ("删除", "删掉", "去掉", "去除", "移除", "清空", "不要")
+        autofill_markers = (
+            "帮我想",
+            "你帮我想",
+            "帮我补",
+            "你帮我补",
+            "帮我补全",
+            "你帮我补全",
+            "帮我完善",
+            "你帮我完善",
+            "帮我写",
+            "你帮我写",
+            "你来想",
+            "你来补",
+            "你来定",
+            "补一下",
+            "补充一下",
+            "完善一下",
+            "丰富一下",
+            "扩写一下",
+            "整理一下",
+        )
+        updates: dict[str, str] = {}
+        clears: set[str] = set()
+        autofill_slots: set[str] = set()
+        active_slot = ""
+        for clause in self._split_design_revision_clauses(content):
+            slot = self._match_design_slot_keyword(clause, slot_keywords)
+            if slot and any(marker in clause for marker in clear_markers):
+                clears.add(slot)
+                autofill_slots.discard(slot)
+                updates.pop(slot, None)
+                active_slot = slot
+                continue
+            if slot and any(marker in clause for marker in autofill_markers):
+                autofill_slots.add(slot)
+                clears.discard(slot)
+                updates.pop(slot, None)
+                active_slot = slot
+                continue
+            value = self._extract_design_revision_value(
+                clause,
+                slot=slot or active_slot,
+                slot_keywords=slot_keywords,
+                update_markers=update_markers,
+            )
+            if value:
+                target_slot = slot or active_slot
+                if target_slot:
+                    updates[target_slot] = value[:60]
+                    clears.discard(target_slot)
+                    autofill_slots.discard(target_slot)
+                    active_slot = target_slot
+                    continue
+            if slot:
+                active_slot = slot
+        return {"updates": updates, "clears": clears, "autofill_slots": autofill_slots}
+
+    def _split_design_revision_clauses(self, content: str) -> list[str]:
+        normalized = re.sub(r"[。；;\n]+", "，", content)
+        normalized = normalized.replace(",", "，")
+        clauses = [item.strip(" ，") for item in normalized.split("，") if item.strip(" ，")]
+        return clauses or [content.strip()]
+
+    def _match_design_slot_keyword(self, clause: str, slot_keywords: dict[str, tuple[str, ...]]) -> str:
+        best_slot = ""
+        best_length = 0
+        for slot, keywords in slot_keywords.items():
+            for keyword in keywords:
+                if keyword in clause and len(keyword) > best_length:
+                    best_slot = slot
+                    best_length = len(keyword)
+        return best_slot
+
+    def _extract_design_revision_value(
+        self,
+        clause: str,
+        *,
+        slot: str,
+        slot_keywords: dict[str, tuple[str, ...]],
+        update_markers: tuple[str, ...],
+    ) -> str:
+        stripped = clause.strip()
+        if not slot:
+            return ""
+        if any(stripped.startswith(marker) for marker in update_markers):
+            for marker in update_markers:
+                if stripped.startswith(marker):
+                    return stripped[len(marker):].strip(" ：:，, ")
+        for marker in update_markers:
+            if marker in stripped:
+                return stripped.split(marker, 1)[-1].strip(" ：:，, ")
+        for keyword in slot_keywords.get(slot, ()):
+            match = re.search(rf"{re.escape(keyword)}\s*[:：是为用走]\s*(.+)$", stripped)
+            if match:
+                return match.group(1).strip(" ，,")
+        return ""
 
     def _first_matching_phrase(self, text: str, phrases: list[str]) -> str | None:
         lowered = text.lower()
@@ -1521,14 +2171,52 @@ class AgentService:
 
     def _is_design_generate_intent(self, content: str) -> bool:
         normalized = content.strip().lower().replace(" ", "")
-        return any(key in normalized for key in ["生成首版设计图", "生成设计图", "生成方案", "开始生成", "直接生成"])
+        return any(
+            key in normalized
+            for key in ["生成首版设计图", "生成设计图", "重新生成设计图", "重新生成", "生成方案", "开始生成", "直接生成"]
+        )
+
+    def _is_ready_generate_design_option(self, content: str) -> bool:
+        normalized = content.strip().lower().replace(" ", "")
+        return normalized in {"生成首版设计图", "重新生成设计图", "重新生成", "开始生成", "直接生成"}
+
+    def _is_design_continue_supplement_intent(self, content: str) -> bool:
+        normalized = content.strip().lower().replace(" ", "")
+        return normalized in {"继续补充设计要求", "继续补充", "补充设计要求", "继续完善设计摘要", "继续完善"}
+
+    def _is_design_alternative_options_intent(self, content: str) -> bool:
+        normalized = content.strip().lower().replace(" ", "")
+        return any(
+            marker in normalized
+            for marker in (
+                "推荐一下其他选择",
+                "推荐其他选择",
+                "其他选择",
+                "还有其他选择",
+                "还有别的选择",
+                "换一批",
+                "换一组",
+                "换几个",
+                "再推荐几个",
+                "更多选择",
+                "其他方案",
+                "别的方向",
+            )
+        )
+
+    def _design_brief_has_generation_context(self, brief: dict[str, Any], stone_analysis: dict[str, object] | None) -> bool:
+        return all(str(brief.get(item) or "").strip() for item in self._required_design_slots(stone_analysis))
+
+    def _default_design_text_to_image_model(self, content: str) -> str:
+        if "重新生成设计图" in content or content.strip().replace(" ", "") == "重新生成":
+            return DEFAULT_IMAGE_REGENERATE_MODEL
+        return DEFAULT_IMAGE_MODEL
 
     def _is_agent_autofill_intent(self, content: str) -> bool:
         normalized = content.strip().lower().replace(" ", "")
         return "agent自行补全" in normalized or "agent补全" in normalized or "自动补全" in normalized
 
-    async def _analyze_stones_or_fallback(self, attachments: list[AgentAssetRef], content: str) -> dict[str, object]:
-        image_url = attachments[0].storage_url or attachments[0].preview_url if attachments else None
+    async def _analyze_stones_or_fallback(self, attachments: list[AgentAssetRef], content: str, *, current_user: User) -> dict[str, object]:
         fallback = {
             "count": len(attachments),
             "shape": "请结合裸石图片确认外形轮廓",
@@ -1538,10 +2226,15 @@ class AgentService:
             "risk_notes": "不要改变裸石形状、颜色、比例和天然纹理",
             "source": "fallback",
         }
-        if not (self.settings.agent_vision_llm_api_key and self.settings.agent_vision_llm_base_url and self.settings.agent_vision_llm_model and image_url):
+        vision_config = self._effective_vision_llm_config()
+        if not (vision_config and attachments):
             return fallback
+        image_url = self._build_vision_image_url(attachments[0], current_user=current_user)
+        if not image_url:
+            return fallback
+        base_url, api_key, model = vision_config
         payload = {
-            "model": self.settings.agent_vision_llm_model,
+            "model": model,
             "messages": [
                 {"role": "system", "content": "你是珠宝裸石设计助理。请只输出 JSON。"},
                 {
@@ -1553,12 +2246,14 @@ class AgentService:
                 },
             ],
             "temperature": 0.1,
+            "max_tokens": 420,
         }
         try:
+            started = perf_counter()
             async with httpx.AsyncClient(timeout=self.settings.agent_llm_timeout_seconds) as client:
                 response = await client.post(
-                    f"{self.settings.agent_vision_llm_base_url.rstrip('/')}/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {self.settings.agent_vision_llm_api_key}", "Content-Type": "application/json"},
+                    self._chat_completions_url(base_url),
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                     json=payload,
                 )
                 response.raise_for_status()
@@ -1566,10 +2261,53 @@ class AgentService:
                 parsed = json.loads(text.strip().strip("`").removeprefix("json").strip())
                 if isinstance(parsed, dict):
                     parsed["source"] = "vision"
+                    logger.info("agent_llm_call stage=stone_vision elapsed_ms=%d", int((perf_counter() - started) * 1000))
                     return parsed
         except Exception:  # noqa: BLE001
             return fallback
         return fallback
+
+    def _build_vision_image_url(self, attachment: AgentAssetRef, *, current_user: User) -> str | None:
+        source_url = attachment.storage_url or attachment.preview_url
+        if not source_url:
+            return None
+        try:
+            self.asset_service.ensure_storage_url_access(storage_url=source_url, current_user=current_user)
+            content, media_type, _ = self.asset_service.fetch_asset_bytes(source_url, filename=attachment.name)
+        except Exception:  # noqa: BLE001
+            return source_url
+        encoded = base64.b64encode(content).decode("ascii")
+        return f"data:{media_type};base64,{encoded}"
+
+    def _effective_vision_llm_config(self) -> tuple[str, str, str] | None:
+        if self.settings.agent_vision_llm_base_url and self.settings.agent_vision_llm_api_key and self.settings.agent_vision_llm_model:
+            return (
+                self.settings.agent_vision_llm_base_url,
+                self.settings.agent_vision_llm_api_key,
+                self.settings.agent_vision_llm_model,
+            )
+        if self._agent_llm_model_can_accept_images() and self.settings.agent_llm_base_url and self.settings.agent_llm_api_key and self.settings.agent_llm_model:
+            return (
+                self.settings.agent_llm_base_url,
+                self.settings.agent_llm_api_key,
+                self.settings.agent_llm_model,
+            )
+        return None
+
+    def _agent_llm_model_can_accept_images(self) -> bool:
+        model = self.settings.agent_llm_model.strip().lower()
+        image_capable_markers = ("qwen3.6", "qwen-vl", "qwen-omni", "gpt-4o", "gemini")
+        return any(marker in model for marker in image_capable_markers)
+
+    def _model_supports_thinking_toggle(self, model_name: str | None) -> bool:
+        normalized = str(model_name or "").strip().lower()
+        return normalized.startswith(("qwen3", "qwen-"))
+
+    def _chat_completions_url(self, base_url: str) -> str:
+        normalized = base_url.rstrip("/")
+        if normalized.endswith("/v1"):
+            return f"{normalized}/chat/completions"
+        return f"{normalized}/v1/chat/completions"
 
     def _search_jewelry_knowledge(self, *, content: str, brief: dict[str, Any], stone_analysis: dict[str, object] | None) -> list[dict[str, object]]:
         text = "\n".join(str(item) for item in [content, *brief.values(), *(stone_analysis or {}).values()] if item)
@@ -1592,34 +2330,110 @@ class AgentService:
         return terms[:8]
 
     def _load_jewelry_term_cards(self) -> list[dict[str, object]]:
-        raw = self._load_jewelry_terms().replace("\n珠宝专业词库节选：\n", "")
-        if not raw:
+        markdown = self._read_jewelry_terms_markdown()
+        if not markdown:
             return []
-        category_keywords = [
-            ("镶嵌工艺", ["镶", "爪", "包镶", "围钻"]),
-            ("玉石描述", ["玉", "翡翠", "种水", "纹理"]),
-            ("金属材质", ["金", "银", "铂", "K金"]),
-            ("风格", ["复古", "现代", "宫廷", "Art"]),
-            ("工艺细节", ["花丝", "雕", "镂空", "抛光"]),
-            ("商业摄影描述", ["背景", "渲染", "光影", "摄影"]),
-        ]
         cards: list[dict[str, object]] = []
-        paragraphs = [item.strip(" -#\t") for item in raw.splitlines() if len(item.strip(" -#\t")) >= 8]
-        for index, paragraph in enumerate(paragraphs[:80]):
-            category = "专业描述"
-            for candidate, words in category_keywords:
-                if any(word in paragraph for word in words):
-                    category = candidate
-                    break
-            cards.append(
+        current_h2 = ""
+        current_h3 = ""
+        lines = markdown.splitlines()
+        line_count = len(lines)
+        index = 0
+        card_index = 0
+
+        while index < line_count:
+            raw_line = lines[index]
+            stripped = raw_line.strip()
+            if not stripped:
+                index += 1
+                continue
+            if stripped.startswith("## "):
+                current_h2 = stripped.removeprefix("## ").strip()
+                current_h3 = ""
+                index += 1
+                continue
+            if stripped.startswith("### "):
+                current_h3 = stripped.removeprefix("### ").strip()
+                index += 1
+                continue
+            if self._is_markdown_table_row(stripped):
+                table_lines: list[str] = []
+                while index < line_count and self._is_markdown_table_row(lines[index].strip()):
+                    table_lines.append(lines[index].strip())
+                    index += 1
+                parsed_rows = self._parse_jewelry_markdown_table(table_lines, section=current_h2, subsection=current_h3)
+                for row in parsed_rows:
+                    card_index += 1
+                    row["id"] = f"term-{card_index}"
+                    cards.append(row)
+                continue
+            index += 1
+        return cards
+
+    def _is_markdown_table_row(self, line: str) -> bool:
+        return line.startswith("|") and line.endswith("|") and line.count("|") >= 2
+
+    def _parse_jewelry_markdown_table(
+        self,
+        table_lines: list[str],
+        *,
+        section: str,
+        subsection: str,
+    ) -> list[dict[str, object]]:
+        if len(table_lines) < 3:
+            return []
+        headers = self._split_markdown_table_row(table_lines[0])
+        if not headers or not self._is_markdown_separator_row(table_lines[1]):
+            return []
+        rows: list[dict[str, object]] = []
+        title_keys = ("术语", "品类", "场景", "结构", "原则", "翡翠类型", "需求", "字段", "类型", "顺序", "优先级")
+        ignored_headers = {"中文提示词", "注意事项"}
+        for row_line in table_lines[2:]:
+            values = self._split_markdown_table_row(row_line)
+            if len(values) != len(headers):
+                continue
+            data = {headers[i]: values[i] for i in range(len(headers))}
+            title = next((str(data.get(key) or "").strip() for key in title_keys if str(data.get(key) or "").strip()), "")
+            if not title:
+                continue
+            parts: list[str] = []
+            for header in headers:
+                value = str(data.get(header) or "").strip()
+                if not value or header in title_keys or header in ignored_headers:
+                    continue
+                cleaned = self._clean_prompt_fragment(value)
+                if not cleaned:
+                    continue
+                parts.append(f"{header}：{cleaned}")
+            prompt_fragment = str(data.get("中文提示词") or "").strip()
+            if prompt_fragment:
+                cleaned_prompt = self._clean_prompt_fragment(prompt_fragment)
+                if cleaned_prompt:
+                    parts.append(f"提示：{cleaned_prompt}")
+            caution = str(data.get("注意事项") or "").strip()
+            if caution:
+                cleaned_caution = self._clean_prompt_fragment(caution)
+                if cleaned_caution:
+                    parts.append(f"注意：{cleaned_caution}")
+            content = "；".join(parts)[:220]
+            if not content:
+                continue
+            category = subsection or section or "专业描述"
+            rows.append(
                 {
-                    "id": f"term-{index + 1}",
-                    "category": category,
-                    "title": paragraph[:24],
-                    "content": paragraph[:180],
+                    "category": category[:32],
+                    "title": title[:24],
+                    "content": content,
                 }
             )
-        return cards
+        return rows
+
+    def _split_markdown_table_row(self, row: str) -> list[str]:
+        return [cell.strip() for cell in row.strip().strip("|").split("|")]
+
+    def _is_markdown_separator_row(self, row: str) -> bool:
+        cells = self._split_markdown_table_row(row)
+        return bool(cells) and all(cell and set(cell) <= {"-", ":"} for cell in cells)
 
     def _apply_knowledge_cards_to_brief(self, brief: dict[str, Any], cards: list[dict[str, object]]) -> None:
         if not cards:
@@ -1650,16 +2464,39 @@ class AgentService:
         self._apply_knowledge_cards_to_brief(brief, cards[:3])
 
     def _missing_design_slots(self, brief: dict[str, Any], stone_analysis: dict[str, object] | None) -> list[str]:
-        required = ["category", "concept", "metal", "style", "craft"]
+        return [item for item in self._required_design_slots(stone_analysis) if not str(brief.get(item) or "").strip()]
+
+    def _required_design_slots(self, stone_analysis: dict[str, object] | None) -> list[str]:
+        required = ["category", "metal", "style"]
         if not stone_analysis:
-            required.insert(2, "gemstone")
-        return [item for item in required if not str(brief.get(item) or "").strip()]
+            required.insert(1, "gemstone")
+        return required
+
+    def _design_slot_is_satisfied(self, slot: str, brief: dict[str, Any], stone_analysis: dict[str, object] | None) -> bool:
+        if slot == "gemstone":
+            if stone_analysis:
+                return True
+            gemstone_value = str(brief.get("gemstone") or "").strip()
+            if not gemstone_value:
+                return False
+            jade_profile = self._extract_jade_brief_profile(brief)
+            return bool(
+                gemstone_value
+                and (
+                    jade_profile.get("water")
+                    or jade_profile.get("color")
+                    or jade_profile.get("shape")
+                    or jade_profile.get("count")
+                    or len(gemstone_value) >= 2
+                )
+            )
+        return bool(str(brief.get(slot) or "").strip())
 
     def _next_design_question(self, missing: list[str], stone_analysis: dict[str, object] | None) -> str:
         labels = {
             "category": "想做成什么品类，例如吊坠、戒指、耳环或胸针？",
             "concept": "这件作品想表达什么设计理念或情绪？",
-            "gemstone": "主石或宝石希望使用什么？",
+            "gemstone": "这版先把翡翠主石定下来吧。可以直接选翡翠种水、颜色和形制，例如冰种蛋面、白冰水滴、飘花叶子，或直接补充玉石数量。",
             "metal": "金属材质倾向于 18K金、玫瑰金、白金还是银？",
             "style": "风格更偏现代、复古、东方、新中式、极简，还是更商业款？",
             "craft": "工艺上希望偏爪镶、包镶、围钻、花丝、镂空，还是交给 Agent 补全？",
@@ -1667,8 +2504,27 @@ class AgentService:
         if not missing:
             return "信息已经足够生成首版设计图。你可以直接点击「生成首版设计图」，也可以继续补充想强调的比例、佩戴场景或商业风格。"
         if stone_analysis and missing[0] == "concept":
-            return "我已保留裸石作为核心。请补充这件镶嵌作品的设计理念，或者点击「Agent 补全 brief」让我先给出一版。"
+            return "我已保留裸石作为核心。请补充这件镶嵌作品的设计理念，或者点击「Agent 补全设计摘要」让我先给出一版。"
         return labels.get(missing[0], "请继续补充你的设计想法。")
+
+    def _strip_design_generate_phrases(self, content: str) -> str:
+        stripped = content.strip()
+        if not stripped:
+            return ""
+        cleaned = stripped
+        phrases = [
+            "生成首版设计图",
+            "重新生成设计图",
+            "重新生成",
+            "生成设计图",
+            "生成方案",
+            "开始生成",
+            "直接生成",
+        ]
+        for phrase in phrases:
+            cleaned = cleaned.replace(phrase, " ")
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        return cleaned.strip()
 
     def _build_design_prompt(
         self,
@@ -1678,24 +2534,66 @@ class AgentService:
         stone_analysis: dict[str, object] | None,
         content: str,
     ) -> str:
-        knowledge_text = "；".join(self._clean_prompt_fragment(str(card.get("content") or card.get("title") or "")) for card in selected_cards[:4])
+        knowledge_text = self._design_language_from_knowledge_cards(selected_cards)
         stone_text = self._format_design_brief_for_prompt(stone_analysis or {})
-        brief_text = self._format_design_brief_for_prompt(brief)
+        brief_text = self._format_design_brief_for_prompt(self._filtered_design_brief_for_prompt(brief))
         if stone_analysis:
             return (
-                f"{DEFAULT_GEMSTONE_DESIGN_PROMPT}"
-                f" 结合当前设计 brief：{brief_text}。"
-                f" 裸石特征：{stone_text}。"
-                f" 融合专业设计语言：{knowledge_text or '现代高级珠宝镶嵌设计'}。"
-                f" 用户补充：{content or '生成首版设计图'}。"
+                f"{DEFAULT_GEMSTONE_DESIGN_PROMPT} "
+                f"设计要求：{brief_text}。"
+                f"裸石特征：{stone_text}。"
+                f"设计语言：{knowledge_text or '自然流畅的高级珠宝镶嵌语言，结构稳定，层次清晰'}。"
+                f"{self._clean_user_generation_note(content)}"
             )
         prompt = (
-            f"根据当前设计 brief 生成高级珠宝设计图：{brief_text}。"
-            f" 融合专业设计语言：{knowledge_text or '现代高级珠宝设计，结构清晰，比例优雅'}。"
-            f" 用户补充：{content or '生成首版设计图'}。"
+            f"生成高级珠宝设计图：{brief_text}。"
+            f"设计语言：{knowledge_text or '现代高级珠宝设计，结构清晰，比例优雅'}。"
+            f"{self._clean_user_generation_note(content)}"
             f"{DEFAULT_TEXT_TO_IMAGE_PROMPT_SUFFIX}"
         )
         return prompt
+
+    def _filtered_design_brief_for_prompt(self, brief: dict[str, Any]) -> dict[str, Any]:
+        allowed = {"category", "concept", "gemstone", "metal", "style", "craft", "scene", "supplement", "stones"}
+        return {key: value for key, value in brief.items() if key in allowed and value not in (None, "", [], {})}
+
+    def _design_language_from_knowledge_cards(self, cards: list[dict[str, object]]) -> str:
+        fragments: list[str] = []
+        for card in cards[:4]:
+            text = self._clean_prompt_fragment(str(card.get("content") or card.get("title") or ""))
+            if not text or self._contains_prompt_meta_text(text):
+                continue
+            fragments.append(text)
+        return "；".join(fragments[:3])
+
+    def _clean_user_generation_note(self, content: str) -> str:
+        stripped = content.strip()
+        if not stripped or self._is_ready_generate_design_option(stripped) or self._is_design_generate_intent(stripped):
+            return ""
+        cleaned = self._clean_prompt_fragment(stripped)
+        if not cleaned or self._contains_prompt_meta_text(cleaned):
+            return ""
+        return f"用户补充：{cleaned}。"
+
+    def _contains_prompt_meta_text(self, text: str) -> bool:
+        blocked = (
+            "本文档",
+            "文生图",
+            "提示词",
+            "模型",
+            "表格",
+            "Prompt",
+            "prompt",
+            "用于优化",
+            "中文名称",
+            "英文名称",
+            "专业参考",
+            "候选",
+            "Gold-Silver",
+            "gold-silver",
+            "metal inlay work",
+        )
+        return any(item in text for item in blocked)
 
     def _format_design_brief_for_prompt(self, data: dict[str, Any]) -> str:
         labels = {
@@ -1743,12 +2641,112 @@ class AgentService:
     ) -> str:
         if should_generate:
             mode_text = "裸石镶嵌设计" if stone_analysis else "设计出图"
-            return f"收到，我会基于当前 brief 提交{mode_text}任务。生成完成后，只围绕这张设计图继续重做或修改 brief。"
+            return f"收到，我会基于当前设计摘要提交{mode_text}任务。生成完成后，只围绕这张设计图继续重做或修改设计摘要。"
         summary = self._format_design_brief_for_chat(brief, stone_analysis)
         next_question = self._next_design_question(missing, stone_analysis)
         if stone_analysis:
-            return f"我已把裸石作为设计核心，并更新当前 brief：\n\n{summary}\n\n{next_question}"
-        return f"我已更新当前设计 brief：\n\n{summary}\n\n{next_question}"
+            return f"我已把裸石作为设计核心，并更新当前设计摘要：\n\n{summary}\n\n{next_question}"
+        return f"我已更新当前设计摘要：\n\n{summary}\n\n{next_question}"
+
+    def _build_design_ready_review_reply(self, brief: dict[str, Any], stone_analysis: dict[str, object] | None) -> str:
+        summary = self._format_design_brief_for_review(brief, stone_analysis)
+        if stone_analysis:
+            return (
+                "我先把这版设计摘要收拢给你确认：\n\n"
+                f"{summary}\n\n"
+                "如果这些信息没问题，可以直接点击「生成首版设计图」；如果还想细调，请点「继续补充设计要求」。"
+            )
+        return (
+            "我先把目前收集到的设计摘要列给你确认：\n\n"
+            f"{summary}\n\n"
+            "如果这些信息没问题，可以直接点击「生成首版设计图」；如果还想细调，请点「继续补充设计要求」。"
+        )
+
+    def _build_design_continue_supplement_reply(self, brief: dict[str, Any], stone_analysis: dict[str, object] | None) -> str:
+        summary = self._format_design_brief_for_review(brief, stone_analysis)
+        return (
+            "好的，当前设计摘要我先保留着：\n\n"
+            f"{summary}\n\n"
+            "你现在可以直接补充还想强调的设计理念、主石观感、镶嵌细节、佩戴场景或商业风格。"
+        )
+
+    def _format_design_brief_for_review(self, brief: dict[str, Any], stone_analysis: dict[str, object] | None) -> str:
+        if stone_analysis:
+            fields = [
+                ("品类", self._review_value(brief.get("category"))),
+                ("裸石数量", self._review_value(stone_analysis.get("count"))),
+                ("裸石形状", self._review_value(stone_analysis.get("shape"))),
+                ("裸石颜色", self._review_value(stone_analysis.get("color"))),
+                ("透明度/种水", self._review_value(stone_analysis.get("transparency"))),
+                ("镶嵌方向", self._review_value(stone_analysis.get("setting_direction"))),
+                ("材质", self._review_value(brief.get("metal"))),
+                ("镶嵌/工艺", self._review_value(brief.get("craft"))),
+                ("风格", self._review_value(brief.get("style"))),
+                ("场景", self._review_value(brief.get("scene"))),
+                ("补充说明", self._review_value(brief.get("supplement"))),
+            ]
+        else:
+            jade_profile = self._extract_jade_brief_profile(brief)
+            fields = [
+                ("品类", self._review_value(brief.get("category"))),
+                ("主石种水", self._review_value(jade_profile.get("water"))),
+                ("翡翠颜色", self._review_value(jade_profile.get("color"))),
+                ("翡翠形制", self._review_value(jade_profile.get("shape"))),
+                ("玉石数量", self._review_value(jade_profile.get("count"))),
+                ("材质", self._review_value(brief.get("metal"))),
+                ("镶嵌/工艺", self._review_value(brief.get("craft"))),
+                ("风格", self._review_value(brief.get("style"))),
+                ("场景", self._review_value(brief.get("scene"))),
+                ("设计理念", self._review_value(brief.get("concept"))),
+                ("补充说明", self._review_value(brief.get("supplement"))),
+            ]
+        return "\n".join(f"- {label}：{value}" for label, value in fields)
+
+    def _extract_jade_brief_profile(self, brief: dict[str, Any]) -> dict[str, str]:
+        gemstone_text = " ".join(
+            str(item)
+            for item in [
+                brief.get("gemstone"),
+                brief.get("concept"),
+                brief.get("supplement"),
+            ]
+            if item
+        )
+        normalized = gemstone_text.replace("，", " ").replace("。", " ").replace("；", " ")
+        profile = self._extract_jade_profile_from_text(normalized)
+        if not profile["water"] and "翡翠" in normalized:
+            profile["water"] = "翡翠主石，种水待细化"
+        if not profile["shape"] and str(brief.get("category") or "").strip() in {"项链", "吊坠"}:
+            profile["shape"] = "吊坠主石形制待细化"
+        return profile
+
+    def _extract_jade_profile_from_text(self, text: str) -> dict[str, str]:
+        normalized = text.replace("，", " ").replace("。", " ").replace("；", " ")
+        waters = ["玻璃种", "高冰种", "冰种", "冰糯种", "糯种", "豆种", "油青种", "蓝水", "晴水", "紫罗兰", "黄翡", "红翡", "墨翠", "飘花", "白冰", "春带彩"]
+        colors = ["帝王绿", "阳绿", "苹果绿", "白冰", "飘花", "紫罗兰", "黄翡", "红翡", "墨翠", "蓝水", "晴水", "春带彩"]
+        shapes = ["蛋面", "水滴", "平安扣", "无事牌", "叶子", "福豆", "福瓜", "葫芦", "马鞍戒面", "随形", "观音", "佛公"]
+        return {
+            "water": self._first_matching_phrase(normalized, waters) or "",
+            "color": self._first_matching_phrase(normalized, colors) or "",
+            "shape": self._first_matching_phrase(normalized, shapes) or "",
+            "count": self._infer_jade_count(normalized),
+        }
+
+    def _infer_jade_count(self, text: str) -> str:
+        normalized = text.replace("两", "二").replace("俩", "二")
+        if any(token in normalized for token in ["三石", "三颗", "3颗", "3石"]):
+            return "三颗主石/三石组合"
+        if any(token in normalized for token in ["双石", "二石", "二颗", "2颗", "2石"]):
+            return "双石组合"
+        if any(token in normalized for token in ["群镶", "排镶", "多颗", "多石"]):
+            return "多颗组合"
+        if text.strip():
+            return "单颗主石"
+        return ""
+
+    def _review_value(self, value: object) -> str:
+        text = str(value).strip() if value not in (None, "", [], {}) else ""
+        return text or "待补充"
 
     def _format_design_brief_for_chat(self, brief: dict[str, Any], stone_analysis: dict[str, object] | None) -> str:
         labels = [
@@ -1768,7 +2766,7 @@ class AgentService:
             if value:
                 lines.append(f"- {label}：{value}")
         if not lines:
-            return "- 暂未形成明确 brief"
+            return "- 暂未形成明确设计摘要"
         return "\n".join(lines)
 
     def _load_design_source_assets(self, conversation: AgentConversation) -> list[AgentAssetRef]:
@@ -2032,6 +3030,8 @@ class AgentService:
     def _default_model_for_module(self, module_key: str) -> str:
         if module_key == "sketch_to_realistic":
             return DEFAULT_SKETCH_TO_REALISTIC_MODEL
+        if module_key == "gemstone_design":
+            return DEFAULT_GEMSTONE_DESIGN_MODEL
         return DEFAULT_IMAGE_MODEL
 
     def _normalize_asset_refs(self, attachments: list[AgentAssetRef], *, current_user: User) -> list[AgentAssetRef]:
@@ -2324,10 +3324,16 @@ class AgentService:
         )
 
     def _load_jewelry_terms(self) -> str:
-        terms_path = __import__("pathlib").Path(__file__).resolve().parents[3] / "docx" / "珠宝行业专业名词与描述语大全.md"
+        raw = self._read_jewelry_terms_markdown()
+        if not raw:
+            return ""
+        return "\n珠宝专业词库节选：\n" + raw[:6000]
+
+    def _read_jewelry_terms_markdown(self) -> str:
+        terms_path = Path(__file__).resolve().parents[3] / "docx" / "珠宝行业专业名词与描述语大全.md"
         if not terms_path.exists():
             return ""
-        return "\n珠宝专业词库节选：\n" + terms_path.read_text(encoding="utf-8")[:6000]
+        return terms_path.read_text(encoding="utf-8")
 
     def _build_user_prompt(self, *, content: str, attachments: list[AgentAssetRef]) -> str:
         refs = "\n".join(

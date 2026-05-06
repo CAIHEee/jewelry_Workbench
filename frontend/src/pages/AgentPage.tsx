@@ -68,7 +68,13 @@ interface ResultOptionContext {
   messageId?: string;
   resultAsset?: AgentAssetRef | null;
   sourceAssets?: AgentAssetRef[];
+  moduleKey?: string;
 }
+
+type PendingConversationExitIntent =
+  | { kind: "new"; nextMode: AgentMode }
+  | { kind: "switch"; conversation: AgentConversation }
+  | null;
 
 const moduleLabels: Record<string, string> = {
   text_to_image: "设计出图",
@@ -120,6 +126,12 @@ const multiViewResultStepOptions: AgentFlowOption[] = [
     prompt: "生成灰度图",
   },
   {
+    title: "局部精修",
+    helper: "标注当前多视图中的局部区域，再提交产品精修",
+    prompt: "Agent精修：删除选中内容",
+    behavior: "local_refine",
+  },
+  {
     title: "结束对话",
     helper: "本轮结果已确认，暂时不继续生成",
     prompt: "结束对话",
@@ -144,13 +156,13 @@ const grayscaleResultStepOptions: AgentFlowOption[] = [
 const designResultStepOptions: AgentFlowOption[] = [
   {
     title: "重新生成",
-    helper: "沿用当前 brief 和裸石来源，重新生成一版设计图",
+    helper: "沿用当前设计摘要和裸石来源，切换模型重新生成一版设计图",
     prompt: "重新生成设计图",
     behavior: "regenerate_from_sources",
   },
   {
     title: "修改设计",
-    helper: "回到 brief 继续补充理念、材质、风格或工艺",
+    helper: "回到设计摘要继续补充理念、材质、风格或工艺",
     prompt: "我想调整设计：",
     behavior: "draft_design_revision",
   },
@@ -240,7 +252,7 @@ function getResultStepOptions(moduleKey: string | undefined): AgentFlowOption[] 
 
 function getGenerationResultCopy(moduleKey: string | undefined, fallback: string) {
   if (moduleKey === "text_to_image" || moduleKey === "gemstone_design") {
-    return "设计图生成完成。可以基于当前 brief 重新生成，或继续修改设计理念后再出一版。";
+    return "设计图生成完成。可以基于当前设计摘要重新生成，或继续修改设计理念后再出一版。";
   }
   if (moduleKey === "multi_view") {
     return "多视图生成完成。对结果满意吗？可以重新生成，或进入下一步生成灰度图。";
@@ -249,6 +261,10 @@ function getGenerationResultCopy(moduleKey: string | undefined, fallback: string
     return "灰度图生成完成。对结果满意吗？可以重新生成，或结束本轮对话。";
   }
   return fallback;
+}
+
+function normalizeOptionCardText(value: string) {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function getRefineAttachments(context: ResultOptionContext): AgentAssetRef[] {
@@ -328,6 +344,16 @@ function AgentLoadingHint({ label }: { label: string }) {
   );
 }
 
+function DownloadIcon() {
+  return (
+    <svg className="agent-download-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3v11" />
+      <path d="m7 10 5 5 5-5" />
+      <path d="M5 20h14" />
+    </svg>
+  );
+}
+
 export function AgentPage({ assetItems }: AgentPageProps) {
   const [mode, setMode] = useState<AgentMode>("workflow");
   const [conversations, setConversations] = useState<AgentConversation[]>([]);
@@ -350,9 +376,11 @@ export function AgentPage({ assetItems }: AgentPageProps) {
   const [lightbox, setLightbox] = useState<AgentLightboxState | null>(null);
   const [consumedResultMessageIds, setConsumedResultMessageIds] = useState<Set<string>>(() => new Set());
   const [pendingDeleteConversation, setPendingDeleteConversation] = useState<AgentConversation | null>(null);
+  const [pendingConversationExitIntent, setPendingConversationExitIntent] = useState<PendingConversationExitIntent>(null);
   const [pendingDraftAttachments, setPendingDraftAttachments] = useState<AgentAssetRef[] | null>(null);
   const [pendingRefineContext, setPendingRefineContext] = useState<ResultOptionContext | null>(null);
   const [pendingLocalRefineContext, setPendingLocalRefineContext] = useState<ResultOptionContext | null>(null);
+  const [localRefineReturnTarget, setLocalRefineReturnTarget] = useState<"result_options" | "refine_choices">("result_options");
   const [localMarkupFile, setLocalMarkupFile] = useState<File | null>(null);
   const [localMarkupPreviewUrl, setLocalMarkupPreviewUrl] = useState<string | null>(null);
   const [localRefinePrompt, setLocalRefinePrompt] = useState("");
@@ -526,11 +554,36 @@ export function AgentPage({ assetItems }: AgentPageProps) {
   }
 
   function handleNewConversation(nextMode = mode) {
+    if (hasPendingChoiceState()) {
+      setPendingConversationExitIntent({ kind: "new", nextMode });
+      return;
+    }
+    if (loading || activeGeneration) {
+      setError("当前 Agent 任务还在进行中，请等待完成后再切换对话。");
+      return;
+    }
     setActiveConversationId(null);
     resetConversationView(nextMode);
   }
 
+  function handleSelectConversation(conversation: AgentConversation) {
+    if (conversation.id === activeConversationId) return;
+    if (hasPendingChoiceState()) {
+      setPendingConversationExitIntent({ kind: "switch", conversation });
+      return;
+    }
+    if (loading || activeGeneration) {
+      setError("当前 Agent 任务还在进行中，请等待完成后再切换对话。");
+      return;
+    }
+    setActiveConversationId(conversation.id);
+  }
+
   async function handleStartConversation(nextMode: AgentMode) {
+    if (loading || activeGeneration) {
+      setError("当前 Agent 任务还在进行中，请等待完成后再创建新对话。");
+      return;
+    }
     try {
       const created = await createAgentConversation(nextMode);
       setConversations((current) => [created, ...current]);
@@ -590,7 +643,8 @@ export function AgentPage({ assetItems }: AgentPageProps) {
 
   async function handleSend(contentOverride?: string, attachmentOverride?: AgentAssetRef[]) {
     if (loading || !activeConversationId) return;
-    if (pendingDesignOptions.length > 0 && contentOverride === undefined) return;
+    const hasPendingAttachmentInput = files.length > 0 || selectedAssetItems.length > 0;
+    if (pendingDesignOptions.length > 0 && contentOverride === undefined && !hasPendingAttachmentInput && !attachmentOverride?.length) return;
     const content = (contentOverride ?? draft).trim();
     if (!content && files.length === 0 && selectedAssetItems.length === 0) return;
 
@@ -630,6 +684,12 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     try {
       const shouldUsePendingDraftAttachments = pendingDraftAttachments && files.length === 0 && selectedAssetItems.length === 0;
       const attachments = attachmentOverride ?? (shouldUsePendingDraftAttachments ? pendingDraftAttachments : await buildAttachments(content));
+      setMessages((current) => current.map((item) => (item.id === tempUserMessage.id ? { ...item, attachments } : item)));
+      if (contentOverride === undefined && attachmentOverride === undefined) {
+        setFiles([]);
+        setSelectedAssetItems([]);
+        setAssetPickerResetToken((value) => value + 1);
+      }
       await sendAgentMessageStream(
         activeConversationId,
         { content, mode, attachments },
@@ -678,11 +738,8 @@ export function AgentPage({ assetItems }: AgentPageProps) {
           },
         },
       );
-      setFiles([]);
-      setSelectedAssetItems([]);
       setPendingDraftAttachments(null);
       setPendingRefineContext(null);
-      setAssetPickerResetToken((value) => value + 1);
       const [conversationItems, memoryItems] = await Promise.all([fetchAgentConversations(), fetchAgentMemories()]);
       setConversations(conversationItems);
       setMemories(memoryItems);
@@ -774,7 +831,20 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     }
   }
 
-  async function handleEndConversation() {
+  function hasPendingChoiceState() {
+    if (pendingDesignOptions.length > 0 || pendingRefineContext || pendingLocalRefineContext) {
+      return true;
+    }
+    if (activeGeneration?.conversationId === activeConversationId && (activeGeneration.resultUrl || activeGeneration.errorMessage)) {
+      return true;
+    }
+    return messages.some((message) => {
+      if (consumedResultMessageIds.has(message.id)) return false;
+      return Boolean(getGenerationEvent(message));
+    });
+  }
+
+  async function performEndConversation() {
     if (!activeConversationId || loading) return;
     setLoading(true);
     setError(null);
@@ -793,11 +863,31 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       const [conversationItems, memoryItems] = await Promise.all([fetchAgentConversations(), fetchAgentMemories()]);
       setConversations(conversationItems);
       setMemories(memoryItems);
+      return true;
     } catch (endError) {
       setError(endError instanceof Error ? endError.message : "结束对话失败");
+      return false;
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleEndConversation() {
+    await performEndConversation();
+  }
+
+  async function handleEndConversationThenContinue() {
+    const intent = pendingConversationExitIntent;
+    if (!intent) return;
+    const ended = await performEndConversation();
+    if (!ended) return;
+    setPendingConversationExitIntent(null);
+    if (intent.kind === "new") {
+      setActiveConversationId(null);
+      resetConversationView(intent.nextMode);
+      return;
+    }
+    setActiveConversationId(intent.conversation.id);
   }
 
   function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -841,6 +931,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
 
   function clearLocalRefineState() {
     setPendingLocalRefineContext(null);
+    setLocalRefineReturnTarget("result_options");
     setLocalMarkupFile(null);
     setLocalMarkupPreviewUrl((current) => {
       if (current) URL.revokeObjectURL(current);
@@ -859,11 +950,13 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     }
     if (option.behavior === "draft_refine_prompt") {
       setPendingRefineContext(context);
+      clearLocalRefineState();
       return;
     }
     if (option.behavior === "local_refine") {
       setPendingRefineContext(null);
       setPendingLocalRefineContext(context);
+      setLocalRefineReturnTarget("result_options");
       setLocalMarkupFile(null);
       setLocalMarkupPreviewUrl((current) => {
         if (current) URL.revokeObjectURL(current);
@@ -873,6 +966,10 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       return;
     }
     if (option.behavior === "regenerate_from_sources") {
+      if (context.moduleKey === "text_to_image" || context.moduleKey === "gemstone_design") {
+        void handleSend(option.prompt);
+        return;
+      }
       void handleSend(option.prompt, context.sourceAssets?.length ? context.sourceAssets : context.resultAsset ? [context.resultAsset] : undefined);
       return;
     }
@@ -906,6 +1003,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     if (option.behavior === "local_refine") {
       setPendingLocalRefineContext(pendingRefineContext);
       setPendingRefineContext(null);
+      setLocalRefineReturnTarget("refine_choices");
       setLocalMarkupFile(null);
       setLocalMarkupPreviewUrl((current) => {
         if (current) URL.revokeObjectURL(current);
@@ -922,6 +1020,34 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     }
     setDraft(option.prompt);
     setPendingDraftAttachments(refs.length ? refs : null);
+  }
+
+  function restoreLatestResultOptions() {
+    setConsumedResultMessageIds((current) => {
+      const next = new Set(current);
+      [...messages].reverse().some((message) => {
+        if (!getGenerationEvent(message)) return false;
+        next.delete(message.id);
+        return true;
+      });
+      return next;
+    });
+  }
+
+  function handleBackToResultOptions() {
+    setPendingRefineContext(null);
+    clearLocalRefineState();
+    restoreLatestResultOptions();
+  }
+
+  function handleBackFromLocalRefine() {
+    const previousRefineContext = pendingLocalRefineContext;
+    clearLocalRefineState();
+    if (localRefineReturnTarget === "refine_choices" && previousRefineContext) {
+      setPendingRefineContext(previousRefineContext);
+      return;
+    }
+    restoreLatestResultOptions();
   }
 
   async function handleSubmitLocalRefine() {
@@ -956,6 +1082,11 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     void handleSend(value);
   }
 
+  function handleDesignRefreshOptions() {
+    if (loading) return;
+    void handleSend("推荐一下其他选择");
+  }
+
   const activeOptions = mode === "design" ? [] : latestGeneratedAsset ? [] : workflowOptions;
   const activeGenerationAlreadyPersisted = Boolean(
     activeGeneration?.resultUrl &&
@@ -970,6 +1101,14 @@ export function AgentPage({ assetItems }: AgentPageProps) {
   const visibleGenerationFailed = Boolean(visibleActiveGeneration?.errorMessage) || progressState === "error";
   const visibleActiveGenerationModuleKey = visibleActiveGeneration?.moduleKey;
   const shouldShowInlineOptions = activeOptions.length > 0 && !visibleActiveGeneration;
+  const latestAssistantPlainMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "assistant" && !getGenerationEvent(message) && message.content.trim())?.content ?? "";
+  const duplicateDesignQuestion =
+    Boolean(pendingDesignQuestion) &&
+    normalizeOptionCardText(pendingDesignQuestion) === normalizeOptionCardText(latestAssistantPlainMessage);
+  const optionCardHeadline = duplicateDesignQuestion ? "请选择下一步" : pendingDesignQuestion || "请选择一个方向";
+  const shouldShowDesignRefreshButton = pendingDesignOptionSource !== "ready";
   const isDesignChoiceLocked = pendingDesignOptions.length > 0 && !loading;
   const hasUnconsumedLatestResultOptions = messages.some((message) => {
     const generationEvent = getGenerationEvent(message);
@@ -985,6 +1124,8 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       (!visibleActiveGeneration && hasUnconsumedLatestResultOptions),
   );
   const isComposerLocked = isDesignChoiceLocked || isResultChoiceLocked;
+  const isTextComposerLocked = isComposerLocked;
+  const canSendPendingAttachmentDuringDesignChoice = isDesignChoiceLocked && (files.length > 0 || selectedAssetItems.length > 0);
   const shouldShowOptionCardLoading =
     Boolean(activeConversationId) && mode === "design" && loading && optionCardLoading && pendingDesignOptions.length === 0;
   const localRefineSourceAsset = pendingLocalRefineContext?.resultAsset ?? latestGeneratedAsset ?? null;
@@ -1017,7 +1158,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
             {messages.length === 0 ? (
               <article className="agent-message assistant">
                 <div className="agent-message-content">
-                <AgentMarkdown content={mode === "design" ? "请直接描述你的设计理念，或上传裸石/玉石图片。我会把信息整理成 brief：品类、主石、材质、风格、工艺和场景；信息不足时只追问关键项，足够后可直接生成首版设计图。" : "您可以直接发送一张线稿图，发送后我会自动进入「线稿转写实」流程，并直接提交写实图生成任务。生成完成后，可以在此基础上进行后续的流程。或者如果您有其它需求，可随时跟我沟通～"} />
+                <AgentMarkdown content={mode === "design" ? "请直接描述你的设计理念，或上传裸石/玉石图片。我会把信息整理成设计摘要：品类、主石、材质、风格、工艺和场景；信息不足时只追问关键项，足够后再请你确认并生成首版设计图。" : "您可以直接发送一张线稿图，发送后我会自动进入「线稿转写实」流程，并直接提交写实图生成任务。生成完成后，可以在此基础上进行后续的流程。或者如果您有其它需求，可随时跟我沟通～"} />
                 </div>
               </article>
             ) : null}
@@ -1063,9 +1204,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                             download
                             aria-label="下载生成图"
                             title="下载生成图"
-                          >
-                            下载
-                          </a>
+                          ><DownloadIcon /></a>
                         </div>
                       </div>
                     </div>
@@ -1099,6 +1238,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                             handleResultOption(option, {
                               messageId: message.id,
                               resultAsset,
+                              moduleKey: generationModuleKey,
                               sourceAssets: generationEvent.source_assets,
                             })
                           }
@@ -1127,8 +1267,13 @@ export function AgentPage({ assetItems }: AgentPageProps) {
               <article className="agent-message assistant agent-options-message agent-refine-choice-message">
                 <div className="agent-refine-choice-card">
                   <div className="agent-refine-choice-head">
-                    <strong>产品精修</strong>
-                    <span>选择一种精修方式</span>
+                    <div>
+                      <strong>产品精修</strong>
+                      <span>选择一种精修方式</span>
+                    </div>
+                    <button className="agent-choice-back-button" type="button" onClick={handleBackToResultOptions} disabled={loading}>
+                      返回上一级
+                    </button>
                   </div>
                   <div className="agent-result-step-grid agent-refine-choice-grid">
                     {refineChoiceOptions.map((option) => (
@@ -1153,8 +1298,13 @@ export function AgentPage({ assetItems }: AgentPageProps) {
               <article className="agent-message assistant agent-options-message agent-refine-choice-message">
                 <div className="agent-refine-choice-card agent-local-refine-card">
                   <div className="agent-refine-choice-head">
-                    <strong>局部修改</strong>
-                    <span>先在图上圈出要修改的位置，再提交给产品精修</span>
+                    <div>
+                      <strong>局部修改</strong>
+                      <span>先在图上圈出要修改的位置，再提交给产品精修</span>
+                    </div>
+                    <button className="agent-choice-back-button" type="button" onClick={handleBackFromLocalRefine} disabled={loading}>
+                      返回
+                    </button>
                   </div>
                   <LocalImageMarkupEditor
                     sourceUrl={localRefineSourceUrl}
@@ -1189,7 +1339,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                     >
                       提交局部修改
                     </button>
-                    <button className="secondary-button compact-button" type="button" onClick={clearLocalRefineState} disabled={loading}>
+                    <button className="secondary-button compact-button" type="button" onClick={handleBackFromLocalRefine} disabled={loading}>
                       取消
                     </button>
                   </div>
@@ -1217,12 +1367,19 @@ export function AgentPage({ assetItems }: AgentPageProps) {
               <article className="agent-message assistant agent-options-message agent-design-choice-message">
                 <div className="agent-design-choice-card">
                   <div className="agent-design-choice-head">
-                    <strong>{pendingDesignQuestion || "请选择一个方向"}</strong>
-                    <span>
-                      {pendingDesignOptionSource === "fallback"
-                        ? "模型未返回可用选项，已按当前槽位给出兜底选项；也可以在“其他”中补充。"
-                        : "选择后我会继续整理 brief；也可以在“其他”中补充自己的想法。"}
-                    </span>
+                    <div>
+                      <strong>{optionCardHeadline}</strong>
+                      <span>
+                        {pendingDesignOptionSource === "fallback"
+                          ? "模型未返回可用选项，已按当前槽位给出兜底选项；也可以在“其他”中补充。"
+                          : "选择后我会继续整理设计摘要；也可以在“其他”中补充自己的想法。"}
+                      </span>
+                    </div>
+                    {shouldShowDesignRefreshButton ? (
+                      <button className="agent-design-refresh-button" type="button" onClick={handleDesignRefreshOptions} disabled={loading}>
+                        换一批
+                      </button>
+                    ) : null}
                   </div>
                   <div className="agent-design-choice-grid">
                     {pendingDesignOptions.map((option) => (
@@ -1324,9 +1481,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                           download
                           aria-label="下载生成图"
                           title="下载生成图"
-                        >
-                          下载
-                        </a>
+                        ><DownloadIcon /></a>
                       ) : null}
                     </div>
                   </div>
@@ -1340,13 +1495,19 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                     ? [
                         {
                           title: "重新生成",
-                          helper: "沿用当前来源重新提交一次",
-                          prompt: "重新生成",
+                          helper:
+                            visibleActiveGenerationModuleKey === "text_to_image" || visibleActiveGenerationModuleKey === "gemstone_design"
+                              ? "沿用当前设计摘要或来源图，切换模型再生成一版"
+                              : "沿用当前来源重新提交一次",
+                          prompt:
+                            visibleActiveGenerationModuleKey === "text_to_image" || visibleActiveGenerationModuleKey === "gemstone_design"
+                              ? "重新生成设计图"
+                              : "重新生成",
                           behavior: "regenerate_from_sources" as const,
                         },
                         {
                           title: "修改设计",
-                          helper: "返回 brief 调整理念、材质或风格",
+                          helper: "返回设计摘要调整理念、材质或风格",
                           prompt: "修改设计：",
                           behavior: "draft_design_revision" as const,
                         },
@@ -1367,6 +1528,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                         onClick={() =>
                           handleResultOption(option, {
                             resultAsset: visibleActiveGeneration.resultAsset,
+                            moduleKey: visibleActiveGeneration.moduleKey,
                             sourceAssets:
                               visibleActiveGeneration.resultAsset
                                 ? [visibleActiveGeneration.resultAsset]
@@ -1395,7 +1557,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                 onKeyDown={handleInputKeyDown}
                 placeholder={
                   isDesignChoiceLocked
-                    ? "请先选择上方选项，或在“其他”中补充"
+                    ? "请先选择上方选项；如当前步骤需要补图，可直接在下方上传后发送"
                     : isResultChoiceLocked
                       ? "请先选择上方结果处理选项"
                       : mode === "design"
@@ -1403,7 +1565,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                         : "输入其他需求，或先用下方 + 上传/选择图片"
                 }
                 rows={1}
-                disabled={isComposerLocked}
+                disabled={isTextComposerLocked}
               />
               <div className="agent-composer-toolbar">
                 <div className="agent-composer-tools">
@@ -1420,7 +1582,25 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                 </div>
                 <div className="agent-send-row">
                   <span>Enter 发送 / Shift+Enter 换行</span>
-                  <button className="agent-send-button" type="button" onClick={() => handleSend()} disabled={loading || isComposerLocked || (!draft.trim() && files.length === 0 && selectedAssetItems.length === 0)}>
+                  <button
+                    className="agent-send-button"
+                    type="button"
+                    onClick={() => handleSend()}
+                    disabled={
+                      loading ||
+                      isResultChoiceLocked ||
+                      (!canSendPendingAttachmentDuringDesignChoice &&
+                        isDesignChoiceLocked &&
+                        !draft.trim() &&
+                        files.length === 0 &&
+                        selectedAssetItems.length === 0) ||
+                      (!canSendPendingAttachmentDuringDesignChoice &&
+                        !isDesignChoiceLocked &&
+                        !draft.trim() &&
+                        files.length === 0 &&
+                        selectedAssetItems.length === 0)
+                    }
+                  >
                     <span aria-hidden="true">›</span>
                     发送
                   </button>
@@ -1445,7 +1625,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
 
       <aside className={historyCollapsed ? "agent-history-column collapsed" : "agent-history-column"}>
         {!historyCollapsed ? (
-          <button className="page-history-toggle-button agent-new-chat-button" type="button" onClick={() => handleNewConversation(mode)}>
+          <button className="page-history-toggle-button agent-new-chat-button" type="button" onClick={() => handleNewConversation(mode)} disabled={loading}>
             新对话
           </button>
         ) : null}
@@ -1468,7 +1648,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
             <div className="page-history-sidebar-list">
               {conversations.map((conversation) => (
                 <article className={conversation.id === activeConversationId ? "page-history-card agent-history-card active" : "page-history-card agent-history-card"} key={conversation.id}>
-                  <button className="page-history-card-button" type="button" onClick={() => setActiveConversationId(conversation.id)}>
+                  <button className="page-history-card-button" type="button" onClick={() => handleSelectConversation(conversation)} disabled={loading}>
                     {!historyCollapsed ? (
                       <>
                         <div className="history-inline-head history-entry-head"><h4>{getConversationDisplayTitle(conversation)}</h4></div>
@@ -1538,6 +1718,31 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                 }}
               >
                 确认删除
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {pendingConversationExitIntent ? (
+        <div className="admin-modal-backdrop" role="presentation" onClick={() => setPendingConversationExitIntent(null)}>
+          <div className="admin-modal-card agent-delete-modal" role="dialog" aria-modal="true" aria-label="结束当前对话提示" onClick={(event) => event.stopPropagation()}>
+            <div className="admin-modal-header">
+              <h3>先结束当前对话</h3>
+              <button className="template-close-button" type="button" onClick={() => setPendingConversationExitIntent(null)} aria-label="关闭提示">
+                ×
+              </button>
+            </div>
+            <div className="admin-modal-body">
+              <p className="muted">当前会话还有待处理的选项。请先结束当前对话，再切换其他历史记录或创建新对话。</p>
+              <p className="muted">结束后会保留当前对话记录，稍后仍可回来查看。</p>
+            </div>
+            <div className="admin-modal-actions">
+              <button className="secondary-button" type="button" onClick={() => setPendingConversationExitIntent(null)} disabled={loading}>
+                取消
+              </button>
+              <button className="primary-button" type="button" onClick={() => void handleEndConversationThenContinue()} disabled={loading}>
+                结束当前对话
               </button>
             </div>
           </div>

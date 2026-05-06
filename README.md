@@ -56,6 +56,16 @@ python -m uvicorn agent_service.main:app --reload --host 0.0.0.0 --port 8010
 
 前端开发服务器会把 `/agent-api` 代理到 `http://127.0.0.1:8010`。如果没有配置 `AGENT_LLM_API_KEY`，Agent 会使用本地规则兜底回复和动作卡，方便先验证流程。
 
+设计出图需要识别用户上传的裸石/玉石图片时，Agent 支持 OpenAI-compatible 多模态模型。以 Qwen DashScope 兼容模式为例：
+
+```env
+AGENT_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode
+AGENT_LLM_API_KEY=你的DashScope API Key
+AGENT_LLM_MODEL=qwen3.6-flash
+```
+
+如果 `AGENT_VISION_LLM_*` 留空，`qwen3.6`、`qwen-vl`、`qwen-omni`、`gpt-4o`、`gemini` 这类图文模型会自动复用 `AGENT_LLM_*` 做裸石视觉分析；如果希望对话规划和视觉识别分开计费或分模型，可单独配置 `AGENT_VISION_LLM_BASE_URL`、`AGENT_VISION_LLM_API_KEY`、`AGENT_VISION_LLM_MODEL`。
+
 ## 前端启动
 
 ```bash
@@ -341,9 +351,9 @@ cp deploy/docker/.env.docker.example .env.docker
 - `MYSQL_ROOT_PASSWORD`
 - `AUTH_SECRET_KEY`
 - `ROOT_DEFAULT_PASSWORD`
-- `WUYIN_API_KEY`
+- `APIYI_API_KEY`
 - `APP_PUBLIC_BASE_URL`
-- `APIYI_API_KEY` 或 `TTAPI_API_KEY`
+- `APIYI_API_KEY`
 
 4. 从 Docker Hub 拉取并启动容器：
 

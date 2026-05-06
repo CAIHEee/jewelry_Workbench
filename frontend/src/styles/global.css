@@ -3723,8 +3723,9 @@ button.agent-generation-tile.agent-generation-clickable,
   right: 8px;
   bottom: 8px;
   z-index: 2;
-  min-height: 26px;
-  padding: 0 9px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3737,6 +3738,16 @@ button.agent-generation-tile.agent-generation-clickable,
   text-decoration: none;
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
   backdrop-filter: blur(10px);
+}
+
+.agent-download-icon {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .agent-generation-download-button:hover,
@@ -4094,6 +4105,14 @@ button.agent-generation-tile.agent-generation-clickable,
 
 .agent-refine-choice-head {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-refine-choice-head div {
+  min-width: 0;
+  display: flex;
   align-items: baseline;
   gap: 8px;
 }
@@ -4106,6 +4125,29 @@ button.agent-generation-tile.agent-generation-clickable,
 .agent-refine-choice-head span {
   color: #aeb7c9;
   font-size: 12px;
+}
+
+.agent-choice-back-button {
+  min-height: 26px;
+  flex-shrink: 0;
+  border: 1px solid rgba(242, 202, 72, 0.18);
+  border-radius: 999px;
+  padding: 0 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #d8deeb;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.agent-choice-back-button:hover:not(:disabled),
+.agent-choice-back-button:focus-visible {
+  border-color: rgba(242, 202, 72, 0.42);
+  color: #f2ca48;
+}
+
+.agent-choice-back-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .agent-refine-choice-grid {
@@ -4173,8 +4215,16 @@ button.agent-generation-tile.agent-generation-clickable,
 }
 
 .agent-design-choice-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-design-choice-head > div {
   display: grid;
   gap: 2px;
+  min-width: 0;
 }
 
 .agent-design-choice-head strong {
@@ -4185,6 +4235,41 @@ button.agent-generation-tile.agent-generation-clickable,
 .agent-design-choice-head span {
   color: #aeb7c9;
   font-size: 12px;
+}
+
+.agent-design-refresh-button {
+  border: 1px solid rgba(212, 175, 55, 0.24);
+  background: rgba(212, 175, 55, 0.1);
+  color: #f0cb66;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.agent-design-refresh-button:hover:not(:disabled),
+.agent-design-refresh-button:focus-visible {
+  background: rgba(212, 175, 55, 0.16);
+  border-color: rgba(240, 203, 102, 0.4);
+  color: #ffe49a;
+}
+
+.agent-design-refresh-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 720px) {
+  .agent-design-choice-head {
+    flex-direction: column;
+  }
+
+  .agent-design-refresh-button {
+    align-self: flex-start;
+  }
 }
 
 .agent-design-choice-grid {

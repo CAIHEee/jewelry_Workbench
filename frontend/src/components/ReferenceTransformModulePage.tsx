@@ -94,7 +94,7 @@ export function ReferenceTransformModulePage({
     [defaultModelId, models, preferredModelId],
   );
   const [prompt, setPrompt] = useState(initialPrompt);
-  const [model, setModel] = useState(resolvedDefaultModelId);
+  const [model, setModel] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<AssetItem[]>([]);
   const [result, setResult] = useState<GenerationResult | null>(null);

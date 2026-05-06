@@ -9,6 +9,7 @@ const progressPhases = [
   { at: 74, label: "生成切工与材质方案中..." },
   { at: 95, label: "整理裸石结果..." },
 ];
+const preferredGemstoneDesignModelId = "gemini-3.1-flash-image-preview";
 
 interface GemstoneDesignPageProps {
   assetItems: AssetItem[];
@@ -42,6 +43,7 @@ export function GemstoneDesignPage(props: GemstoneDesignPageProps) {
       progressPhases={progressPhases}
       successLabel="裸石方案已完成"
       errorProgressLabel="裸石设计失败"
+      preferredModelId={preferredGemstoneDesignModelId}
     />
   );
 }

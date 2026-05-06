@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,6 +33,23 @@ from app.services.agent_service import AgentService
 
 
 settings = get_settings()
+
+
+def _configure_agent_perf_logging() -> None:
+    log_dir = Path(__file__).resolve().parents[1] / "data" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "agent_service.log"
+    logger = logging.getLogger("app.services.agent_service")
+    logger.setLevel(logging.INFO)
+    if any(isinstance(handler, RotatingFileHandler) and getattr(handler, "baseFilename", "") == str(log_path) for handler in logger.handlers):
+        return
+    handler = RotatingFileHandler(log_path, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+    handler.setLevel(logging.INFO)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    logger.addHandler(handler)
+
+
+_configure_agent_perf_logging()
 service = AgentService()
 
 
