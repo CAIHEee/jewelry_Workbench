@@ -5,6 +5,7 @@ WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm install
 
+COPY shared/ /app/shared/
 COPY frontend/ ./
 RUN npm run build
 

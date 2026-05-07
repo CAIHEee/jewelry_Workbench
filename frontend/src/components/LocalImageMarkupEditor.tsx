@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { createPortal } from "react-dom";
 
-type MarkupTool = "mask" | "doodle" | "text" | "move";
+type MarkupTool = "doodle" | "text" | "move";
 
 interface MarkupPoint {
   x: number;
@@ -10,7 +10,7 @@ interface MarkupPoint {
 
 interface MarkupPath {
   id: string;
-  tool: "mask" | "doodle";
+  tool: "doodle";
   color: string;
   size: number;
   points: MarkupPoint[];
@@ -33,6 +33,8 @@ interface LocalImageMarkupEditorProps {
 }
 
 const MARKUP_FILE_NAME = "local-refine-markup.png";
+const DOODLE_STROKE_COLOR = "#f2ca48";
+const DOODLE_STROKE_ALPHA = 0.92;
 
 function makeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -55,7 +57,7 @@ export function LocalImageMarkupEditor({
   const [open, setOpen] = useState(false);
   const [imageReady, setImageReady] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [tool, setTool] = useState<MarkupTool>("mask");
+  const [tool, setTool] = useState<MarkupTool>("doodle");
   const [paths, setPaths] = useState<MarkupPath[]>([]);
   const [texts, setTexts] = useState<MarkupText[]>([]);
   const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
@@ -132,13 +134,13 @@ export function LocalImageMarkupEditor({
   }
 
   function getActiveBrushSize() {
-    return tool === "doodle" ? Math.max(4, Math.round(brushSize * 0.38)) : brushSize;
+    return Math.max(4, Math.round(brushSize * 0.38));
   }
 
   function updateBrushCursor(event: PointerEvent<HTMLCanvasElement>) {
     const canvas = canvasRef.current;
     const wrap = canvas?.parentElement;
-    if (!canvas || !wrap || (tool !== "mask" && tool !== "doodle")) {
+    if (!canvas || !wrap || tool !== "doodle") {
       setBrushCursor((current) => ({ ...current, visible: false }));
       return;
     }
@@ -171,7 +173,7 @@ export function LocalImageMarkupEditor({
       context.lineJoin = "round";
       context.lineWidth = path.size;
       context.strokeStyle = path.color;
-      context.globalAlpha = path.tool === "mask" ? 0.38 : 0.92;
+      context.globalAlpha = DOODLE_STROKE_ALPHA;
       context.beginPath();
       context.moveTo(path.points[0].x, path.points[0].y);
       path.points.slice(1).forEach((point) => context.lineTo(point.x, point.y));
@@ -246,9 +248,9 @@ export function LocalImageMarkupEditor({
 
     const path: MarkupPath = {
       id: makeId(tool),
-      tool: tool === "doodle" ? "doodle" : "mask",
-      color: tool === "doodle" ? "#f2ca48" : "#ff3b5f",
-      size: tool === "doodle" ? Math.max(4, Math.round(brushSize * 0.38)) : brushSize,
+      tool: "doodle",
+      color: DOODLE_STROKE_COLOR,
+      size: Math.max(4, Math.round(brushSize * 0.38)),
       points: [point],
     };
     currentPathRef.current = path;
@@ -338,7 +340,6 @@ export function LocalImageMarkupEditor({
             <p>保存后会替换产品精修的第一张参考图；原始文件不会被覆盖。</p>
           </div>
           <div className="local-markup-toolbar" role="toolbar" aria-label="标注工具">
-            <button type="button" className={tool === "mask" ? "active" : ""} onClick={() => setTool("mask")}>涂层</button>
             <button type="button" className={tool === "doodle" ? "active" : ""} onClick={() => setTool("doodle")}>涂鸦</button>
             <button type="button" className={tool === "text" ? "active" : ""} onClick={() => setTool("text")}>文字</button>
             <button type="button" className={tool === "move" ? "active" : ""} onClick={() => setTool("move")}>移动文字</button>
@@ -368,7 +369,7 @@ export function LocalImageMarkupEditor({
           <canvas
             ref={canvasRef}
             className={imageReady ? "local-markup-canvas ready" : "local-markup-canvas"}
-            style={{ cursor: tool === "mask" || tool === "doodle" ? "none" : tool === "text" ? "text" : "default" }}
+            style={{ cursor: tool === "doodle" ? "none" : tool === "text" ? "text" : "default" }}
             onPointerDown={handlePointerDown}
             onPointerEnter={updateBrushCursor}
             onPointerMove={handlePointerMove}
@@ -397,7 +398,7 @@ export function LocalImageMarkupEditor({
       <div className="local-markup-head">
         <div>
           <h4>局部修改标注</h4>
-          <p>涂层、涂鸦和文字会合成到参考图中，用于提示模型重点修改的位置。</p>
+          <p>涂鸦和文字会合成到参考图中，用于提示模型重点修改的位置。</p>
         </div>
         <button className="secondary-button compact-button" type="button" onClick={() => setOpen(true)} disabled={disabled || !hasSource}>
           打开局部标注

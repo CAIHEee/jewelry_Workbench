@@ -10,6 +10,7 @@ interface AssetSourcePickerProps {
   includeUploadOption?: boolean;
   compactTrigger?: boolean;
   uploadLabel?: string;
+  enableRecommendedAsset?: boolean;
   onUploadFilesChange?: (files: File[]) => void;
   onSelectedAssetsChange?: (assets: AssetItem[]) => void;
 }
@@ -22,16 +23,19 @@ export function AssetSourcePicker({
   includeUploadOption = true,
   compactTrigger = false,
   uploadLabel,
+  enableRecommendedAsset = true,
   onUploadFilesChange,
   onSelectedAssetsChange,
 }: AssetSourcePickerProps) {
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [sourceType, setSourceType] = useState<"asset" | "upload">(includeUploadOption ? "upload" : "asset");
+  const [sourceType, setSourceType] = useState<"asset" | "upload">("asset");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
   const [assetModalOpen, setAssetModalOpen] = useState(false);
   const [compactMenuOpen, setCompactMenuOpen] = useState(false);
   const [assetScope, setAssetScope] = useState<"mine" | "community">("mine");
+  const [dismissedRecommendedAssetId, setDismissedRecommendedAssetId] = useState<string | null>(null);
+  const [recommendedHidden, setRecommendedHidden] = useState(false);
   const uploadFilesChangeRef = useRef(onUploadFilesChange);
   const selectedAssetsChangeRef = useRef(onSelectedAssetsChange);
 
@@ -53,6 +57,23 @@ export function AssetSourcePicker({
     [assetItems],
   );
   const visibleAssetItems = assetScope === "mine" ? personalAssetItems : communityAssetItems;
+  const recommendedAsset = useMemo(
+    () =>
+      personalAssetItems.find((item) => item.scope === "session")
+      ?? personalAssetItems.find((item) => item.source === "当前会话")
+      ?? personalAssetItems[0]
+      ?? communityAssetItems[0]
+      ?? null,
+    [communityAssetItems, personalAssetItems],
+  );
+  const showRecommendedAsset =
+    enableRecommendedAsset
+    && !allowMultiple
+    && sourceType === "asset"
+    && selectedAssets.length === 0
+    && Boolean(recommendedAsset)
+    && !recommendedHidden
+    && recommendedAsset?.id !== dismissedRecommendedAssetId;
 
   const uploadedPreviews = useMemo(
     () =>
@@ -77,6 +98,27 @@ export function AssetSourcePicker({
   useEffect(() => {
     selectedAssetsChangeRef.current?.(sourceType === "asset" ? selectedAssets : []);
   }, [selectedAssets, sourceType]);
+
+  useEffect(() => {
+    if (!recommendedAsset) {
+      setDismissedRecommendedAssetId(null);
+      setRecommendedHidden(false);
+      return;
+    }
+    if (dismissedRecommendedAssetId && dismissedRecommendedAssetId !== recommendedAsset.id) {
+      setDismissedRecommendedAssetId(null);
+      setRecommendedHidden(false);
+    }
+    if (sourceType !== "asset" || allowMultiple || !enableRecommendedAsset) {
+      setRecommendedHidden(false);
+    }
+  }, [allowMultiple, dismissedRecommendedAssetId, enableRecommendedAsset, recommendedAsset, sourceType]);
+
+  useEffect(() => {
+    if (sourceType !== "asset" || allowMultiple || !enableRecommendedAsset) {
+      setRecommendedHidden(false);
+    }
+  }, [allowMultiple, enableRecommendedAsset, sourceType]);
 
   useEffect(() => {
     if (!assetModalOpen) {
@@ -126,6 +168,29 @@ export function AssetSourcePicker({
 
   function removeSelectedAsset(assetId: string) {
     setSelectedIds((current) => current.filter((id) => id !== assetId));
+  }
+
+  function applyRecommendedAsset() {
+    if (!recommendedAsset) {
+      return;
+    }
+    setRecommendedHidden(true);
+    setDismissedRecommendedAssetId(recommendedAsset.id);
+    setSelectedIds([recommendedAsset.id]);
+  }
+
+  function dismissRecommendedAsset(event?: { preventDefault?: () => void; stopPropagation?: () => void }) {
+    if (event?.preventDefault) {
+      event.preventDefault();
+    }
+    if (event?.stopPropagation) {
+      event.stopPropagation();
+    }
+    if (!recommendedAsset) {
+      return;
+    }
+    setRecommendedHidden(true);
+    setDismissedRecommendedAssetId(recommendedAsset.id);
   }
 
   function removeUploadedFile(indexToRemove: number) {
@@ -318,190 +383,234 @@ export function AssetSourcePicker({
     );
   }
 
+  const recommendedAssetOverlay = showRecommendedAsset && recommendedAsset && !assetModalOpen
+    ? (
+        <div className="source-recommended-overlay" role="presentation">
+          <div className="source-recommended-floating-card" role="dialog" aria-label="推荐图片">
+            <button
+              type="button"
+              className="preview-remove-button source-recommended-dismiss"
+              aria-label={`关闭推荐 ${recommendedAsset.name}`}
+              title="关闭推荐"
+              onPointerDown={(event) => dismissRecommendedAsset(event)}
+              onClick={(event) => dismissRecommendedAsset(event)}
+            >
+              ×
+            </button>
+            <button
+              type="button"
+              className="source-recommended-image-button"
+              onPointerDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                applyRecommendedAsset();
+              }}
+              title={`直接使用 ${recommendedAsset.name}`}
+              aria-label={`直接使用推荐图片 ${recommendedAsset.name}`}
+            >
+              <div className="source-recommended-thumb">
+                {recommendedAsset.previewUrl ?? recommendedAsset.storageUrl ? (
+                  <img
+                    src={recommendedAsset.previewUrl ?? recommendedAsset.storageUrl ?? ""}
+                    alt={recommendedAsset.name}
+                  />
+                ) : (
+                  <div className="source-recommended-fallback" style={{ background: recommendedAsset.preview }} />
+                )}
+              </div>
+            </button>
+          </div>
+        </div>
+      )
+    : null;
+
   return (
-    <div className="source-picker-card">
-      <div className="source-picker-header">
-        <div className="source-picker-copy">
-          <h4>{title}</h4>
-          {helper ? <p className="muted">{helper}</p> : null}
-        </div>
-        <div className="source-picker-summary">
-          <span className="status-pill idle">{sourceType === "upload" ? "本地上传" : "资产图片"}</span>
-          <small>{sourceSummary}</small>
-        </div>
-      </div>
-
-      {includeUploadOption ? (
-        <>
-          <div className="source-segmented">
-            <button
-              type="button"
-              className={sourceType === "upload" ? "source-mode-button active" : "source-mode-button"}
-              onClick={() => setSourceType("upload")}
-            >
-              <strong>本地上传</strong>
-              <span>{allowMultiple ? "上传多张图片" : "上传单张图片"}</span>
-            </button>
-            <button
-              type="button"
-              className={sourceType === "asset" ? "source-mode-button active" : "source-mode-button"}
-              onClick={() => setSourceType("asset")}
-            >
-              <strong>基于资产</strong>
-              <span>从资产库选择</span>
-            </button>
+    <>
+      <div className="source-picker-card">
+        <div className="source-picker-header">
+          <div className="source-picker-copy">
+            <h4>{title}</h4>
+            {helper ? <p className="muted">{helper}</p> : null}
           </div>
-          <div className="source-asset-helper">
-            <p>基于资产可直接选择历史生成的结果图，或已上传到过的图片。</p>
-            <p>以上可以避免多次上传相同的图片，导致资产库出现大量相同图片。</p>
+          <div className="source-picker-summary">
+            <span className="status-pill idle">{sourceType === "upload" ? "本地上传" : "资产图片"}</span>
+            <small>{sourceSummary}</small>
           </div>
-        </>
-      ) : null}
-
-      {sourceType === "upload" ? (
-        <div className="source-panel-body">
-          <label className="upload-dropzone compact">
-            <input type="file" accept="image/png,image/jpeg,image/webp" multiple={allowMultiple} onChange={handleUploadChange} />
-            <strong>{uploadLabel ?? (allowMultiple ? "上传多张参考图" : "上传单张参考图")}</strong>
-          </label>
-          {uploadError ? <p className="error-text">{uploadError}</p> : null}
-
-          {uploadedFiles.length > 0 ? (
-            <details className="drawer-panel inner-drawer source-upload-drawer" open>
-              <summary className="drawer-summary">
-                <div>
-                  <h4>已上传图片</h4>
-                </div>
-                <span className="drawer-hint">展开 / 收起</span>
-              </summary>
-              <div className="drawer-content">
-                <div className="source-upload-scroll-panel">
-                  <div className="source-preview-grid source-preview-grid-full">
-                    {uploadedPreviews.map((item, index) => (
-                      <article className="source-preview-card source-preview-card-full removable-preview-card" key={item.key}>
-                        <button
-                          type="button"
-                          className="preview-remove-button"
-                          aria-label={`删除 ${item.name}`}
-                          title="删除"
-                          onClick={() => removeUploadedFile(index)}
-                        >
-                          ×
-                        </button>
-                        <div className="source-preview-image-frame">
-                          <img src={item.url} alt={item.name} />
-                        </div>
-                        <p title={item.name}>{item.name}</p>
-                      </article>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </details>
-          ) : null}
         </div>
-      ) : (
-        <div className="asset-picker-inline-card">
-          <div className="asset-picker-inline-copy">
-            <h4>资产来源</h4>
-          </div>
-          <button className="secondary-button compact-button" type="button" onClick={() => setAssetModalOpen(true)}>
-            打开资产列表
-          </button>
 
-          {selectedAssets.length > 0 ? (
-            <div className="panel-subcard compact">
-              <div className="source-preview-grid">
-                {selectedAssets.map((item) => (
-                  <article className="source-preview-card asset removable-preview-card" key={item.id}>
-                    <button
-                      type="button"
-                      className="preview-remove-button"
-                      aria-label={`删除 ${item.name}`}
-                      title="删除"
-                      onClick={() => removeSelectedAsset(item.id)}
-                    >
-                      ×
-                    </button>
-                    <div className="source-preview-art" style={{ background: item.preview }} />
-                    <p>{item.name}</p>
-                  </article>
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </div>
-      )}
-
-      {assetModalOpen ? (
-        <div className="asset-modal-backdrop" role="presentation" onClick={() => setAssetModalOpen(false)}>
-          <div className="asset-modal-card" role="dialog" aria-modal="true" aria-label="资产图片选择" onClick={(event) => event.stopPropagation()}>
-            <div className="asset-modal-header">
-              <div className="stack-list compact-stack">
-                <h3>资产图片选择</h3>
-              </div>
-              <button className="template-close-button" type="button" onClick={() => setAssetModalOpen(false)} aria-label="关闭资产窗口">
-                ×
+        {includeUploadOption ? (
+          <>
+            <div className="source-segmented">
+              <button
+                type="button"
+                className={sourceType === "upload" ? "source-mode-button active" : "source-mode-button"}
+                onClick={() => setSourceType("upload")}
+              >
+                <strong>本地上传</strong>
+                <span>{allowMultiple ? "上传多张图片" : "上传单张图片"}</span>
+              </button>
+              <button
+                type="button"
+                className={sourceType === "asset" ? "source-mode-button active" : "source-mode-button"}
+                onClick={() => setSourceType("asset")}
+              >
+                <strong>基于资产</strong>
+                <span>从资产库选择</span>
               </button>
             </div>
+            <div className="source-asset-helper">
+              <p>基于资产可直接选择历史生成的结果图，或已上传到过的图片。</p>
+              <p>以上可以避免多次上传相同的图片，导致资产库出现大量相同图片。</p>
+            </div>
+          </>
+        ) : null}
 
-            <div className="asset-modal-toolbar">
-              <div className="asset-modal-scope-nav" role="tablist" aria-label="资产范围选择">
-                <button
-                  className={assetScope === "mine" ? "asset-modal-scope-button active" : "asset-modal-scope-button"}
-                  type="button"
-                  onClick={() => setAssetScope("mine")}
-                >
-                  个人资产
-                  <span>{personalAssetItems.length}</span>
-                </button>
-                <button
-                  className={assetScope === "community" ? "asset-modal-scope-button active" : "asset-modal-scope-button"}
-                  type="button"
-                  onClick={() => setAssetScope("community")}
-                >
-                  社区资产
-                  <span>{communityAssetItems.length}</span>
+        {sourceType === "upload" ? (
+          <div className="source-panel-body">
+            <label className="upload-dropzone compact">
+              <input type="file" accept="image/png,image/jpeg,image/webp" multiple={allowMultiple} onChange={handleUploadChange} />
+              <strong>{uploadLabel ?? (allowMultiple ? "上传多张参考图" : "上传单张参考图")}</strong>
+            </label>
+            {uploadError ? <p className="error-text">{uploadError}</p> : null}
+
+            {uploadedFiles.length > 0 ? (
+              <details className="drawer-panel inner-drawer source-upload-drawer" open>
+                <summary className="drawer-summary">
+                  <div>
+                    <h4>已上传图片</h4>
+                  </div>
+                  <span className="drawer-hint">展开 / 收起</span>
+                </summary>
+                <div className="drawer-content">
+                  <div className="source-upload-scroll-panel">
+                    <div className="source-preview-grid source-preview-grid-full">
+                      {uploadedPreviews.map((item, index) => (
+                        <article className="source-preview-card source-preview-card-full removable-preview-card" key={item.key}>
+                          <button
+                            type="button"
+                            className="preview-remove-button"
+                            aria-label={`删除 ${item.name}`}
+                            title="删除"
+                            onClick={() => removeUploadedFile(index)}
+                          >
+                            ×
+                          </button>
+                          <div className="source-preview-image-frame">
+                            <img src={item.url} alt={item.name} />
+                          </div>
+                          <p title={item.name}>{item.name}</p>
+                        </article>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </details>
+            ) : null}
+          </div>
+        ) : (
+          <div className="asset-picker-inline-card">
+            <div className="asset-picker-inline-copy">
+              <h4>资产来源</h4>
+            </div>
+            <button className="secondary-button compact-button" type="button" onClick={() => setAssetModalOpen(true)}>
+              打开资产列表
+            </button>
+            {recommendedAssetOverlay}
+
+            {selectedAssets.length > 0 ? (
+              <div className="panel-subcard compact">
+                <div className="source-preview-grid">
+                  {selectedAssets.map((item) => (
+                    <article className="source-preview-card asset removable-preview-card" key={item.id}>
+                      <button
+                        type="button"
+                        className="preview-remove-button"
+                        aria-label={`删除 ${item.name}`}
+                        title="删除"
+                        onClick={() => removeSelectedAsset(item.id)}
+                      >
+                        ×
+                      </button>
+                      <div className="source-preview-art" style={{ background: item.preview }} />
+                      <p>{item.name}</p>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        )}
+
+        {assetModalOpen ? (
+          <div className="asset-modal-backdrop" role="presentation" onClick={() => setAssetModalOpen(false)}>
+            <div className="asset-modal-card" role="dialog" aria-modal="true" aria-label="资产图片选择" onClick={(event) => event.stopPropagation()}>
+              <div className="asset-modal-header">
+                <div className="stack-list compact-stack">
+                  <h3>资产图片选择</h3>
+                </div>
+                <button className="template-close-button" type="button" onClick={() => setAssetModalOpen(false)} aria-label="关闭资产窗口">
+                  ×
                 </button>
               </div>
-              <div className="hint-box template-hint-box">{allowMultiple ? "当前支持多选" : "当前支持单选"}</div>
-            </div>
 
-            <div className="asset-modal-body">
-              {visibleAssetItems.length > 0 ? (
-                <div className="asset-grid asset-library-grid">
-                  {visibleAssetItems.map((item) => {
-                  const selected = selectedIds.includes(item.id);
-                  const assetPreviewUrl = item.previewUrl ?? item.storageUrl ?? null;
-                  return (
-                    <button key={item.id} type="button" className={selected ? "asset-card selected" : "asset-card"} onClick={() => toggleAsset(item.id)}>
-                      <div className="asset-thumb">
-                        {assetPreviewUrl ? (
-                          <img className="asset-thumb-image" src={assetPreviewUrl} alt={item.name} />
-                        ) : (
-                          <div className="asset-thumb-fallback" style={{ background: item.preview }} />
-                        )}
-                      </div>
-                      <div className="asset-copy">
-                        <strong>{item.name}</strong>
-                        <span>
-                          {item.category} / {item.source}
-                        </span>
-                        <small>{item.updatedAt}</small>
-                      </div>
-                    </button>
-                  );
-                  })}
+              <div className="asset-modal-toolbar">
+                <div className="asset-modal-scope-nav" role="tablist" aria-label="资产范围选择">
+                  <button
+                    className={assetScope === "mine" ? "asset-modal-scope-button active" : "asset-modal-scope-button"}
+                    type="button"
+                    onClick={() => setAssetScope("mine")}
+                  >
+                    个人资产
+                    <span>{personalAssetItems.length}</span>
+                  </button>
+                  <button
+                    className={assetScope === "community" ? "asset-modal-scope-button active" : "asset-modal-scope-button"}
+                    type="button"
+                    onClick={() => setAssetScope("community")}
+                  >
+                    社区资产
+                    <span>{communityAssetItems.length}</span>
+                  </button>
                 </div>
-              ) : (
-                <div className="panel-subcard empty-state asset-modal-empty-state">
-                  <p className="muted">{assetScope === "mine" ? "当前没有可选的个人资产。" : "当前没有可选的社区资产。"}</p>
-                </div>
-              )}
+                <div className="hint-box template-hint-box">{allowMultiple ? "当前支持多选" : "当前支持单选"}</div>
+              </div>
+
+              <div className="asset-modal-body">
+                {visibleAssetItems.length > 0 ? (
+                  <div className="asset-grid asset-library-grid">
+                    {visibleAssetItems.map((item) => {
+                      const selected = selectedIds.includes(item.id);
+                      const assetPreviewUrl = item.previewUrl ?? item.storageUrl ?? null;
+                      return (
+                        <button key={item.id} type="button" className={selected ? "asset-card selected" : "asset-card"} onClick={() => toggleAsset(item.id)}>
+                          <div className="asset-thumb">
+                            {assetPreviewUrl ? (
+                              <img className="asset-thumb-image" src={assetPreviewUrl} alt={item.name} />
+                            ) : (
+                              <div className="asset-thumb-fallback" style={{ background: item.preview }} />
+                            )}
+                          </div>
+                          <div className="asset-copy">
+                            <strong>{item.name}</strong>
+                            <span>
+                              {item.category} / {item.source}
+                            </span>
+                            <small>{item.updatedAt}</small>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="panel-subcard empty-state asset-modal-empty-state">
+                    <p className="muted">{assetScope === "mine" ? "当前没有可选的个人资产。" : "当前没有可选的社区资产。"}</p>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      ) : null}
-    </div>
+        ) : null}
+      </div>
+    </>
   );
 }

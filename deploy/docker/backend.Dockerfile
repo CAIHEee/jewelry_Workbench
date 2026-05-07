@@ -22,6 +22,7 @@ RUN python -m pip install --upgrade pip -i "$PIP_INDEX_URL" \
 
 COPY backend/ /app/backend/
 COPY deploy/ /app/deploy/
+COPY shared/ /app/shared/
 
 RUN mkdir -p /app/backend/data/local_assets
 

@@ -178,6 +178,7 @@ export function ImageEditPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
               title="选择线稿来源"
               assetItems={assetItems}
               uploadLabel="上传线稿或草图"
+              enableRecommendedAsset={false}
               onUploadFilesChange={setFiles}
               onSelectedAssetsChange={setSelectedAssets}
             />
