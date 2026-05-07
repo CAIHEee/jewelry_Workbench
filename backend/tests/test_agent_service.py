@@ -139,6 +139,7 @@ def test_agent_end_conversation_does_not_call_llm(auth_client: TestClient, monke
     assert body["messages"][-1]["role"] == "assistant"
     assert "已结束" in body["messages"][-1]["content"]
     assert body["conversation"]["current_stage"] == "ended"
+    assert body["conversation"]["status"] == "ended"
 
 
 def test_design_mode_with_gemstone_image_creates_gemstone_action_and_state(auth_client: TestClient) -> None:
@@ -355,6 +356,138 @@ def test_design_mode_reuses_cached_stone_analysis(auth_client: TestClient, monke
     assert first.status_code == 200
     assert second.status_code == 200
     assert analyze_calls == 1
+
+
+def test_design_stone_analysis_and_generation_prompt_are_chinese(auth_client: TestClient, monkeypatch) -> None:
+    async def fake_analyze(self, attachments, content, *, current_user):  # noqa: ANN001, ARG001
+        return {
+            "count": 4,
+            "shape": "Mixed geometric shapes (rectangular block, elongated oval/cabochon, triangle, irregular trapezoid)",
+            "color": "Translucent white, amber/honey yellow, reddish-brown/orange, deep emerald green",
+            "transparency": "Semi-transparent to translucent with a glossy, waxy or vitreous luster",
+            "setting_direction": "Due to irregular shapes and varying sizes, bezel settings or custom low-profile prong settings are recommended to secure edges. Suitable for cluster rings, earrings, or pendant accents.",
+            "recommended_style": "Light luxury cluster style",
+            "source": "vision",
+        }
+
+    async def fake_design_llm(self, **kwargs):  # noqa: ANN001
+        return {
+            "design_brief": {
+                "category": "戒指",
+                "metal": "18K白金",
+                "style": "Light luxury cluster style",
+                "craft": "bezel settings and low-profile prong settings",
+                "scene": "晚宴聚会",
+            },
+            "missing_slots": [],
+            "pending_design_slot": "",
+            "should_generate": True,
+            "latest_design_mode": "gemstone_design",
+            "reply": "信息已经足够生成首版设计图。",
+        }
+
+    async def no_prompt_llm(self, **kwargs):  # noqa: ANN001
+        return None
+
+    monkeypatch.setattr(AgentService, "_analyze_stones_or_fallback", fake_analyze)
+    monkeypatch.setattr(AgentService, "_call_design_brief_llm", fake_design_llm)
+    monkeypatch.setattr(AgentService, "_call_design_generation_prompt_llm", no_prompt_llm)
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "design"})
+    conversation_id = created.json()["id"]
+
+    response = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "生成首版设计图",
+            "attachments": [{"name": "stone.png", "storage_url": "https://example.com/stone.png"}],
+        },
+    )
+
+    assert response.status_code == 200
+    detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
+    state_text = json.dumps(detail["conversation"]["state"], ensure_ascii=False)
+    prompt = detail["actions"][0]["prompt"]
+    combined = f"{state_text}\n{prompt}"
+    assert "Mixed geometric" not in combined
+    assert "Light luxury" not in combined
+    assert "bezel settings" not in combined
+    assert "low-profile prong" not in combined
+    assert "多种几何随形" in combined
+    assert "轻奢围镶风" in combined
+
+
+def test_gemstone_image_design_requires_craft_and_scene_before_ready(auth_client: TestClient, monkeypatch) -> None:
+    async def fake_analyze(self, attachments, content, *, current_user):  # noqa: ANN001, ARG001
+        return {
+            "count": 1,
+            "shape": "水滴形",
+            "color": "阳绿色",
+            "transparency": "冰种",
+            "setting_direction": "适合吊坠纵向镶嵌",
+            "source": "vision",
+        }
+
+    async def fake_design_llm(self, **kwargs):  # noqa: ANN001
+        brief = dict(kwargs.get("brief") or {})
+        brief.setdefault("category", "吊坠")
+        brief.setdefault("metal", "18K白金")
+        brief.setdefault("style", "现代东方")
+        return {
+            "design_brief": brief,
+            "missing_slots": [],
+            "pending_design_slot": "",
+            "should_generate": False,
+            "latest_design_mode": "gemstone_design",
+            "reply": "信息已经足够生成首版设计图。",
+            "options": [],
+        }
+
+    monkeypatch.setattr(AgentService, "_analyze_stones_or_fallback", fake_analyze)
+    monkeypatch.setattr(AgentService, "_call_design_brief_llm", fake_design_llm)
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "design"})
+    conversation_id = created.json()["id"]
+
+    first = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "用这颗裸石做设计",
+            "attachments": [{"name": "stone.png", "storage_url": "https://example.com/stone.png"}],
+        },
+    )
+
+    assert first.status_code == 200
+    assert "event: action_card" not in first.text
+    detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
+    state = detail["conversation"]["state"]
+    assert state["pending_design_slot"] == "craft"
+    assert state["pending_design_option_source"] == "fallback"
+
+    second = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={"content": "包镶", "attachments": []},
+    )
+
+    assert second.status_code == 200
+    detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
+    state = detail["conversation"]["state"]
+    assert state["design_brief"]["craft"] == "包镶"
+    assert state["pending_design_slot"] == "scene"
+    assert "佩戴/使用场景" in state["pending_design_question"]
+
+    third = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={"content": "日常通勤", "attachments": []},
+    )
+
+    assert third.status_code == 200
+    detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
+    state = detail["conversation"]["state"]
+    assert state["design_brief"]["scene"] == "日常通勤"
+    assert state["pending_design_slot"] is None
+    assert state["pending_design_option_source"] == "ready"
+    assert state["pending_design_options"][0]["value"] == "生成首版设计图"
 
 
 def test_text_only_design_requires_gemstone_slot_before_generate(auth_client: TestClient, monkeypatch) -> None:
@@ -794,6 +927,14 @@ def test_design_generation_prompt_rejects_meta_text_from_llm(auth_client: TestCl
     assert "花开富贵" in prompt
 
 
+def test_design_generation_prompt_rejects_english_prompt() -> None:
+    service = AgentService()
+
+    assert not service._is_safe_design_generation_prompt(
+        "Create a luxury jewelry pendant with bezel settings, translucent gemstone, glossy waxy luster, modern oriental style."
+    )
+
+
 def test_design_regenerate_skips_followup_options_when_brief_is_ready(auth_client: TestClient, monkeypatch) -> None:
     async def fail_if_design_llm_called(*args, **kwargs):  # noqa: ANN002, ANN003
         raise AssertionError("Ready regenerate should not call the design brief LLM.")
@@ -814,6 +955,7 @@ def test_design_regenerate_skips_followup_options_when_brief_is_ready(auth_clien
                 "metal": "18K玫瑰金",
                 "style": "自然花卉风",
                 "craft": "立体浮雕与錾刻",
+                "scene": "收藏展示",
             },
             "stone_analysis": {
                 "count": 2,
@@ -1188,6 +1330,7 @@ def test_workflow_prompt_with_image_uses_llm_planning(auth_client: TestClient, m
     assert response.status_code == 200
     detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
     assert detail["actions"][0]["module_key"] == "multi_view"
+    assert detail["actions"][0]["params"]["model"] == "gpt-image-2-all-apiyi"
 
 
 def test_agent_registers_latest_generation_result_for_followup(auth_client: TestClient, monkeypatch) -> None:
@@ -1229,6 +1372,7 @@ def test_agent_registers_latest_generation_result_for_followup(auth_client: Test
     detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
     assert detail["actions"][0]["module_key"] == "multi_view"
     assert detail["actions"][0]["source_image_urls"] == ["https://example.com/realistic-result.png"]
+    assert detail["actions"][0]["params"]["model"] == "gpt-image-2-all-apiyi"
 
 
 def test_custom_refine_prompt_does_not_append_default_prompt(auth_client: TestClient, monkeypatch) -> None:
@@ -1310,6 +1454,136 @@ def test_card_action_grayscale_uses_explicit_result_without_llm(auth_client: Tes
     action = detail["actions"][0]
     assert action["module_key"] == "grayscale_relief"
     assert action["source_image_urls"] == ["https://example.com/multi-view.png"]
+    assert action["params"]["model"] == "gpt-image-2-all-apiyi"
+
+
+def test_agent_result_event_preserves_action_sources(auth_client: TestClient, monkeypatch) -> None:
+    async def fail_if_llm_called(self, *, conversation, current_user, content, attachments, memories):  # noqa: ANN001, ARG001
+        raise AssertionError("Clear workflow routing should not call the LLM.")
+
+    monkeypatch.setattr(AgentService, "_call_llm_or_fallback", fail_if_llm_called)
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "workflow"})
+    conversation_id = created.json()["id"]
+
+    response = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "生成灰度图",
+            "attachments": [
+                {"name": "multi-view.png", "storage_url": "https://example.com/multi-view.png"},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    action = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()["actions"][0]
+
+    registered = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/generation-result",
+        json={
+            "action_id": action["id"],
+            "module_key": "grayscale_relief",
+            "image_url": "https://example.com/grayscale-result.png",
+            "name": "灰度结果",
+        },
+    )
+    assert registered.status_code == 200
+    detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
+    generation_message = next(item for item in detail["messages"] if (item.get("event") or {}).get("type") == "generation_result")
+    assert generation_message["event"]["source_assets"][0]["storage_url"] == "https://example.com/multi-view.png"
+    assert detail["conversation"]["state"]["generation_source_assets_by_module"]["grayscale_relief"][0]["storage_url"] == "https://example.com/multi-view.png"
+
+
+def test_regenerate_grayscale_reuses_original_module_source(auth_client: TestClient, monkeypatch) -> None:
+    async def fail_if_llm_called(self, *, conversation, current_user, content, attachments, memories):  # noqa: ANN001, ARG001
+        raise AssertionError("Card action routing should not call the LLM.")
+
+    monkeypatch.setattr(AgentService, "_call_llm_or_fallback", fail_if_llm_called)
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "workflow"})
+    conversation_id = created.json()["id"]
+
+    first = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "生成灰度图",
+            "attachments": [
+                {"name": "multi-view.png", "storage_url": "https://example.com/multi-view.png"},
+            ],
+        },
+    )
+    assert first.status_code == 200
+    first_action = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()["actions"][0]
+    registered = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/generation-result",
+        json={
+            "action_id": first_action["id"],
+            "module_key": "grayscale_relief",
+            "image_url": "https://example.com/grayscale-result.png",
+            "name": "灰度结果",
+        },
+    )
+    assert registered.status_code == 200
+
+    regenerated = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "重新生成灰度图",
+            "attachments": [
+                {"name": "wrong-latest-result.png", "storage_url": "https://example.com/grayscale-result.png"},
+            ],
+        },
+    )
+    assert regenerated.status_code == 200
+    next_action = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()["actions"][0]
+    assert next_action["module_key"] == "grayscale_relief"
+    assert next_action["source_image_urls"] == ["https://example.com/multi-view.png"]
+
+
+def test_regenerate_multi_view_reuses_original_module_source(auth_client: TestClient, monkeypatch) -> None:
+    async def fail_if_llm_called(self, *, conversation, current_user, content, attachments, memories):  # noqa: ANN001, ARG001
+        raise AssertionError("Card action routing should not call the LLM.")
+
+    monkeypatch.setattr(AgentService, "_call_llm_or_fallback", fail_if_llm_called)
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "workflow"})
+    conversation_id = created.json()["id"]
+
+    first = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "生成多视图",
+            "attachments": [
+                {"name": "realistic.png", "storage_url": "https://example.com/realistic.png"},
+            ],
+        },
+    )
+    assert first.status_code == 200
+    first_action = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()["actions"][0]
+    registered = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/generation-result",
+        json={
+            "action_id": first_action["id"],
+            "module_key": "multi_view",
+            "image_url": "https://example.com/multi-view-result.png",
+            "name": "多视图结果",
+        },
+    )
+    assert registered.status_code == 200
+
+    regenerated = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "重新生成多视图",
+            "attachments": [
+                {"name": "wrong-latest-result.png", "storage_url": "https://example.com/multi-view-result.png"},
+            ],
+        },
+    )
+    assert regenerated.status_code == 200
+    next_action = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()["actions"][0]
+    assert next_action["module_key"] == "multi_view"
+    assert next_action["source_image_urls"] == ["https://example.com/realistic.png"]
 
 
 def test_agent_rejects_unknown_action_module(auth_client: TestClient) -> None:

@@ -457,6 +457,9 @@ class JobQueueService:
             detail = exc.detail
             if isinstance(detail, str) and detail.strip():
                 return detail[:4000]
+            normalized_detail = self._format_upstream_error_detail(detail)
+            if normalized_detail:
+                return normalized_detail[:4000]
             return f"HTTP {exc.status_code} 错误。"
         if isinstance(exc, httpx.TimeoutException):
             return "上游模型服务请求超时，请稍后重试。"
@@ -466,6 +469,65 @@ class JobQueueService:
                 return message[:4000]
             return f"{exc.__class__.__name__} occurred."
         return "任务执行失败。"
+
+    def _format_upstream_error_detail(self, detail: Any) -> str | None:
+        if not isinstance(detail, dict):
+            return None
+        upstream_status = detail.get("upstream_status")
+        upstream_response = detail.get("upstream_response")
+        message = self._extract_upstream_error_text(upstream_response)
+        normalized_message = message.lower() if message else ""
+
+        if self._is_upstream_balance_error(upstream_status, message):
+            return "当前所选 AI 服务余额不足，请前往对应中转平台充值后再试。"
+        if "model_not_found" in normalized_message or ("模型" in message and "不存在" in message):
+            return "当前所选模型不可用，请切换模型或联系管理员检查模型配置。"
+        if "invalid token" in normalized_message or "unauthorized" in normalized_message:
+            return "当前所选 AI 服务认证失败，请联系管理员检查对应中转的 API Key。"
+        if "timeout" in normalized_message or "超时" in message:
+            return "当前所选 AI 服务处理超时，请稍后重试，或切换其他中转/模型。"
+        if upstream_status == 429:
+            return "当前所选 AI 服务请求过于频繁，请稍后再试。"
+        if upstream_status:
+            return f"上游 AI 服务返回 HTTP {upstream_status} 错误。{message}" if message else f"上游 AI 服务返回 HTTP {upstream_status} 错误。"
+        return message or None
+
+    def _extract_upstream_error_text(self, payload: Any) -> str:
+        if payload is None:
+            return ""
+        if isinstance(payload, str):
+            return payload.strip()
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            if isinstance(error, dict):
+                parts = [str(error.get(key)).strip() for key in ("code", "message", "type") if error.get(key)]
+                if parts:
+                    return " ".join(parts)
+            if isinstance(error, str):
+                return error.strip()
+            for key in ("message", "msg", "detail", "code"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+                if isinstance(value, dict):
+                    nested = self._extract_upstream_error_text(value)
+                    if nested:
+                        return nested
+        return ""
+
+    def _is_upstream_balance_error(self, upstream_status: Any, message: str) -> bool:
+        normalized = message.lower()
+        balance_markers = (
+            "insufficient_balance",
+            "insufficient balance",
+            "balance not enough",
+            "quota",
+            "余额不足",
+            "积分不足",
+            "账户余额",
+            "额度不足",
+        )
+        return upstream_status == 402 or any(marker in normalized for marker in balance_markers)
 
     def _status_message(self, status_value: str, *, error_message: str | None) -> str:
         mapping = {

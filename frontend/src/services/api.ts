@@ -259,7 +259,7 @@ async function waitForGenerationJobResult<T>(
 ): Promise<T> {
   async function resolveTerminalJob(job: GenerationJobStatusResponse): Promise<T> {
     if (job.status === "failed") {
-      throw new Error(job.error_message || job.message || fallbackError);
+      throw new Error(normalizeApiErrorMessage(job.error_message || job.message || "", fallbackError));
     }
 
     if (job.status === "succeeded") {

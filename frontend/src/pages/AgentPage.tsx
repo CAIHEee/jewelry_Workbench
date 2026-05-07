@@ -53,6 +53,7 @@ interface ActiveGenerationPreview {
   actionTitle: string;
   moduleKey: string;
   sourceUrl: string | null;
+  sourceAssets: AgentAssetRef[];
   resultUrl: string | null;
   resultAsset: AgentAssetRef | null;
   errorMessage?: string | null;
@@ -142,7 +143,7 @@ const multiViewResultStepOptions: AgentFlowOption[] = [
 const grayscaleResultStepOptions: AgentFlowOption[] = [
   {
     title: "重新生成灰度图",
-    helper: "基于当前结果重新生成灰度立体化参考",
+    helper: "沿用本次灰度图的原始多视图来源重新生成",
     prompt: "重新生成灰度图",
   },
   {
@@ -283,6 +284,10 @@ function getPrimaryResultAttachment(context: ResultOptionContext): AgentAssetRef
   return context.resultAsset ? [context.resultAsset] : undefined;
 }
 
+function getRegenerationSourceAttachments(context: ResultOptionContext): AgentAssetRef[] | undefined {
+  return context.sourceAssets?.length ? context.sourceAssets : getPrimaryResultAttachment(context);
+}
+
 function formatConversationTimestamp(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -358,6 +363,8 @@ export function AgentPage({ assetItems }: AgentPageProps) {
   const [mode, setMode] = useState<AgentMode>("workflow");
   const [conversations, setConversations] = useState<AgentConversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [activeConversationStatus, setActiveConversationStatus] = useState<string>("active");
+  const [activeConversationStage, setActiveConversationStage] = useState<string | null>(null);
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [, setActions] = useState<AgentAction[]>([]);
   const [memories, setMemories] = useState<AgentUserMemory[]>([]);
@@ -428,6 +435,8 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       if (conversationItems[0]) {
         setActiveConversationId(conversationItems[0].id);
         setMode(conversationItems[0].mode);
+        setActiveConversationStatus(conversationItems[0].status);
+        setActiveConversationStage(conversationItems[0].current_stage ?? null);
       }
     } catch (bootError) {
       setError(bootError instanceof Error ? bootError.message : "Agent 初始化失败");
@@ -440,6 +449,8 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       setMessages(detail.messages);
       setActions(detail.actions);
       setMode(detail.conversation.mode);
+      setActiveConversationStatus(detail.conversation.status);
+      setActiveConversationStage(detail.conversation.current_stage ?? null);
       const latestGenerated = detail.conversation.state?.latest_generated_asset;
       setLatestGeneratedAsset(latestGenerated && typeof latestGenerated === "object" ? latestGenerated as AgentAssetRef : null);
       setPendingDesignOptions(restorePendingDesignOptions(detail.conversation.state));
@@ -482,6 +493,9 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       actionTitle: pendingAction.title,
       moduleKey: pendingAction.module_key,
       sourceUrl,
+      sourceAssets: pendingAction.source_assets.length
+        ? pendingAction.source_assets
+        : pendingAction.source_image_urls.map((url) => ({ storage_url: url, preview_url: url })),
       resultUrl: null,
       resultAsset: null,
       errorMessage: null,
@@ -530,6 +544,8 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     setMode(nextMode);
     setMessages([]);
     setActions([]);
+    setActiveConversationStatus("active");
+    setActiveConversationStage(null);
     setDraft("");
     setLatestGeneratedAsset(null);
     setConsumedResultMessageIds(new Set());
@@ -577,6 +593,9 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       return;
     }
     setActiveConversationId(conversation.id);
+    setMode(conversation.mode);
+    setActiveConversationStatus(conversation.status);
+    setActiveConversationStage(conversation.current_stage ?? null);
   }
 
   async function handleStartConversation(nextMode: AgentMode) {
@@ -604,6 +623,8 @@ export function AgentPage({ assetItems }: AgentPageProps) {
         if (nextActive) {
           setActiveConversationId(nextActive.id);
           setMode(nextActive.mode);
+          setActiveConversationStatus(nextActive.status);
+          setActiveConversationStage(nextActive.current_stage ?? null);
         } else {
           setActiveConversationId(null);
           resetConversationView(mode);
@@ -767,6 +788,9 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       actionTitle: action.title,
       moduleKey: action.module_key,
       sourceUrl,
+      sourceAssets: action.source_assets.length
+        ? action.source_assets
+        : action.source_image_urls.map((url) => ({ storage_url: url, preview_url: url })),
       resultUrl: null,
       resultAsset: null,
       errorMessage: null,
@@ -832,6 +856,9 @@ export function AgentPage({ assetItems }: AgentPageProps) {
   }
 
   function hasPendingChoiceState() {
+    if (activeConversationStatus === "ended" || activeConversationStage === "ended") {
+      return false;
+    }
     if (pendingDesignOptions.length > 0 || pendingRefineContext || pendingLocalRefineContext) {
       return true;
     }
@@ -857,6 +884,8 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       setMessages(detail.messages);
       setActions(detail.actions);
       setMode(detail.conversation.mode);
+      setActiveConversationStatus(detail.conversation.status);
+      setActiveConversationStage(detail.conversation.current_stage ?? null);
       setPendingDesignOptions([]);
       setPendingDesignQuestion("");
       setPendingDesignOptionSource("");
@@ -888,6 +917,9 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       return;
     }
     setActiveConversationId(intent.conversation.id);
+    setMode(intent.conversation.mode);
+    setActiveConversationStatus(intent.conversation.status);
+    setActiveConversationStage(intent.conversation.current_stage ?? null);
   }
 
   function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -989,7 +1021,10 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       return;
     }
     if (option.prompt.includes("多视图") || option.prompt.includes("灰度")) {
-      void handleSend(option.prompt, getPrimaryResultAttachment(context));
+      const attachments = option.prompt.includes("重新生成")
+        ? getRegenerationSourceAttachments(context)
+        : getPrimaryResultAttachment(context);
+      void handleSend(option.prompt, attachments);
       return;
     }
     if (context.resultAsset) {
@@ -1433,7 +1468,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                           ? visibleActiveGeneration.errorMessage || jobProgress?.label || "本次生成失败，请稍后重试。"
                           : visibleActiveGeneration.resultUrl
                             ? "生成已完成，可以继续选择下一步。"
-                            : "我正在为你生成图片，请稍候。"}
+                            : "我正在为努力地为您生成图片，请稍候。"}
                       </p>
                     </div>
                     {progressState === "running" ? null : <span>{progressState === "success" ? "已完成" : "失败"}</span>}
@@ -1529,12 +1564,11 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                           handleResultOption(option, {
                             resultAsset: visibleActiveGeneration.resultAsset,
                             moduleKey: visibleActiveGeneration.moduleKey,
-                            sourceAssets:
-                              visibleActiveGeneration.resultAsset
-                                ? [visibleActiveGeneration.resultAsset]
-                                : visibleActiveGeneration.sourceUrl
-                                  ? [{ storage_url: visibleActiveGeneration.sourceUrl }]
-                                  : undefined,
+                            sourceAssets: visibleActiveGeneration.sourceAssets.length
+                              ? visibleActiveGeneration.sourceAssets
+                              : visibleActiveGeneration.sourceUrl
+                                ? [{ storage_url: visibleActiveGeneration.sourceUrl, preview_url: visibleActiveGeneration.sourceUrl }]
+                                : undefined,
                           })
                         }
                         disabled={loading}

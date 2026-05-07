@@ -42,6 +42,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_IMAGE_REGENERATE_MODEL = "gpt-image-2-all-apiyi"
+DEFAULT_MULTI_VIEW_MODEL = "gpt-image-2-all-apiyi"
+DEFAULT_GRAYSCALE_RELIEF_MODEL = "gpt-image-2-all-apiyi"
 DEFAULT_GEMSTONE_DESIGN_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_SKETCH_TO_REALISTIC_MODEL = "gemini-3.1-flash-image-preview"
 DEFAULT_TEXT_TO_IMAGE_PROMPT_SUFFIX = "高级珠宝产品渲染效果，背景干净，金属光泽真实，工艺细节清晰。"
@@ -235,7 +237,11 @@ class AgentService:
     ) -> tuple[str, AgentActionResponse | None, AgentMemoryProposal | None]:
         conversation = self._get_conversation(conversation_id, current_user=current_user)
         normalized_attachments = self._normalize_asset_refs(attachments, current_user=current_user)
-        active_attachments = normalized_attachments or self._load_recent_assets(conversation)
+        active_attachments = self._resolve_workflow_active_attachments(
+            conversation=conversation,
+            content=content,
+            normalized_attachments=normalized_attachments,
+        )
         self._create_message(
             conversation_id=conversation_id,
             current_user=current_user,
@@ -347,7 +353,11 @@ class AgentService:
     ) -> AsyncIterator[tuple[str, object]]:
         conversation = self._get_conversation(conversation_id, current_user=current_user)
         normalized_attachments = self._normalize_asset_refs(attachments, current_user=current_user)
-        active_attachments = normalized_attachments or self._load_recent_assets(conversation)
+        active_attachments = self._resolve_workflow_active_attachments(
+            conversation=conversation,
+            content=content,
+            normalized_attachments=normalized_attachments,
+        )
         self._create_message(
             conversation_id=conversation_id,
             current_user=current_user,
@@ -713,7 +723,9 @@ class AgentService:
             record = session.get(AgentConversation, conversation.id)
             if record is None:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent conversation not found.")
-            action_record = session.get(AgentAction, action_id) if action_id else None
+            state = self._load_json(record.state_json) or {}
+            resolved_action_id = action_id if action_id else state.get("last_action_id") if isinstance(state.get("last_action_id"), str) else None
+            action_record = session.get(AgentAction, resolved_action_id) if resolved_action_id else None
             if action_record is not None and action_record.user_id == current_user.id:
                 action_schema = self._action_to_schema(action_record)
                 source_refs = self._merge_asset_refs(
@@ -721,15 +733,26 @@ class AgentService:
                     [AgentAssetRef(name="参考图", storage_url=url, preview_url=url) for url in action_schema.source_image_urls],
                 )
                 action_title = action_schema.title
-            state = self._load_json(record.state_json) or {}
+            source_ref_payloads = [item.model_dump(mode="json") for item in source_refs]
             state["latest_generated_asset"] = result_ref.model_dump(mode="json")
             state["latest_generated_module"] = module_key
+            state["latest_generation_source_assets"] = source_ref_payloads
+            generated_assets_by_module = state.get("generated_assets_by_module")
+            if not isinstance(generated_assets_by_module, dict):
+                generated_assets_by_module = {}
+            generated_assets_by_module[module_key] = result_ref.model_dump(mode="json")
+            state["generated_assets_by_module"] = generated_assets_by_module
+            source_assets_by_module = state.get("generation_source_assets_by_module")
+            if not isinstance(source_assets_by_module, dict):
+                source_assets_by_module = {}
+            source_assets_by_module[module_key] = source_ref_payloads
+            state["generation_source_assets_by_module"] = source_assets_by_module
             if action_record is not None:
                 action_params = self._load_json(action_record.params_json) or {}
                 if isinstance(action_params, dict) and action_params.get("model"):
                     state["latest_generated_model"] = action_params.get("model")
-            if action_id:
-                state["latest_generated_action_id"] = action_id
+            if resolved_action_id:
+                state["latest_generated_action_id"] = resolved_action_id
             recent_assets = state.get("recent_assets") if isinstance(state.get("recent_assets"), list) else []
             state["recent_assets"] = self._dedupe_asset_ref_payloads([result_ref.model_dump(mode="json"), *recent_assets])[:6]
             record.state_json = self._dump_json(state)
@@ -751,10 +774,10 @@ class AgentService:
                 attachments=[result_ref],
                 event={
                     "type": "generation_result",
-                    "action_id": action_id,
+                    "action_id": resolved_action_id,
                     "module_key": module_key,
                     "title": action_title,
-                    "source_assets": [item.model_dump(mode="json") for item in source_refs],
+                    "source_assets": source_ref_payloads,
                     "result_asset": result_ref.model_dump(mode="json"),
                 },
             )
@@ -792,6 +815,7 @@ class AgentService:
                 record.state_json = self._dump_json(state)
                 record.summary = self._build_summary(record.summary, "结束对话")
                 record.current_stage = "ended"
+                record.status = "ended"
                 record.updated_at = datetime.now(timezone.utc)
                 session.commit()
         return self.get_conversation_detail(conversation_id=conversation.id, current_user=current_user)
@@ -1061,12 +1085,15 @@ class AgentService:
             if analyze_attachments or not stone_analysis:
                 stone_started = perf_counter()
                 stone_analysis = await self._analyze_stones_or_fallback(attachments, content, current_user=current_user)
+                stone_analysis = self._localize_stone_analysis(stone_analysis)
                 logger.info(
                     "agent_design_stage stage=stone_analysis conversation_id=%s elapsed_ms=%d source=%s",
                     conversation.id,
                     int((perf_counter() - stone_started) * 1000),
                     stone_analysis.get("source") if isinstance(stone_analysis, dict) else None,
                 )
+            else:
+                stone_analysis = self._localize_stone_analysis(stone_analysis)
             brief["stones"] = stone_analysis
             state["design_source_assets"] = [item.model_dump(mode="json") for item in attachments[:1]]
         self._merge_design_content_into_brief(brief, content, pending_slot=pending_slot)
@@ -1089,10 +1116,12 @@ class AgentService:
         computed_missing_slots = self._missing_design_slots(brief, stone_analysis)
         if design_plan:
             brief = self._merge_llm_design_brief(brief, design_plan.get("design_brief"))
+            brief = self._localize_design_brief(brief)
             if stone_analysis:
                 brief["stones"] = stone_analysis
             if stone_analysis and self._is_design_generate_intent(content):
                 self._autofill_design_brief(brief, knowledge_cards[:4], stone_analysis)
+                brief = self._localize_design_brief(brief)
             computed_missing_slots = self._missing_design_slots(brief, stone_analysis)
             missing_slots = list(computed_missing_slots)
             should_generate = explicit_generate_intent and not computed_missing_slots
@@ -1104,7 +1133,7 @@ class AgentService:
             design_options = self._normalize_design_options(design_plan.get("options"))
             if not next_slot:
                 design_options = []
-            elif llm_next_slot and llm_next_slot != next_slot:
+            elif llm_next_slot != next_slot:
                 design_options = []
                 reply = self._build_design_reply(brief, stone_analysis, should_generate, missing_slots)
             if alternative_options_intent and previous_design_options:
@@ -1122,9 +1151,11 @@ class AgentService:
         else:
             if self._is_agent_autofill_intent(content):
                 self._autofill_design_brief(brief, knowledge_cards[:4], stone_analysis)
+                brief = self._localize_design_brief(brief)
             should_generate = explicit_generate_intent
             if should_generate and stone_analysis:
                 self._autofill_design_brief(brief, knowledge_cards[:4], stone_analysis)
+                brief = self._localize_design_brief(brief)
             missing_slots = self._missing_design_slots(brief, stone_analysis)
             if missing_slots:
                 should_generate = False
@@ -1157,6 +1188,10 @@ class AgentService:
             )
         else:
             option_source = "llm"
+        brief = self._localize_design_brief(brief)
+        if stone_analysis:
+            stone_analysis = self._localize_stone_analysis(stone_analysis)
+            brief["stones"] = stone_analysis
         state["design_brief"] = brief
         state["stone_analysis"] = stone_analysis
         state["knowledge_cards"] = knowledge_cards
@@ -1397,6 +1432,7 @@ class AgentService:
             "你必须只输出 JSON 对象，不要输出 Markdown、解释或代码块。\n"
             "任务：根据用户本轮输入、已有设计摘要、裸石分析和专业词库建议，更新槽位，并判断是否应该提交生成。\n"
             "允许槽位：category, concept, gemstone, metal, style, craft, scene, supplement, knowledge_summary。\n"
+            "所有 JSON 字段值必须使用中文；不要输出英文宝石形状、颜色、透明度、镶嵌方式或设计风格。\n"
             "规则：\n"
             "1. 不要把用户的泛指句误当成设计理念。例如“这是我要设计镶嵌的裸石”只表示上传图片是裸石来源，不是 concept。\n"
             "2. 用户短答通常是在回答上一轮 pending_design_slot，例如只说“18k”应填 metal=18K金。\n"
@@ -1501,6 +1537,98 @@ class AgentService:
                 return False
             return True
         return True
+
+    def _localize_design_brief(self, brief: dict[str, Any]) -> dict[str, Any]:
+        localized: dict[str, Any] = {}
+        for key, value in brief.items():
+            if isinstance(value, dict):
+                localized[key] = self._localize_stone_analysis(value) if key == "stones" else self._localize_design_brief(value)
+            else:
+                localized[key] = self._localize_text_value(value, field=key)
+        return localized
+
+    def _localize_stone_analysis(self, stone_analysis: dict[str, object] | None) -> dict[str, object] | None:
+        if not isinstance(stone_analysis, dict):
+            return stone_analysis
+        localized: dict[str, object] = {}
+        for key, value in stone_analysis.items():
+            if key == "source":
+                localized[key] = value
+                continue
+            localized[key] = self._localize_text_value(value, field=key)
+        return localized
+
+    def _localize_text_value(self, value: object, *, field: str = "") -> object:
+        if value in (None, "", [], {}):
+            return value
+        if isinstance(value, list):
+            return [self._localize_text_value(item, field=field) for item in value]
+        if isinstance(value, dict):
+            return {key: self._localize_text_value(item, field=str(key)) for key, item in value.items()}
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text:
+            return text
+
+        replacements = {
+            "mixed geometric shapes": "多种几何随形",
+            "rectangular block": "长方块状",
+            "elongated oval": "长椭圆形",
+            "cabochon": "弧面",
+            "triangle": "三角形",
+            "irregular trapezoid": "不规则梯形",
+            "translucent white": "半透明白色",
+            "amber": "琥珀色",
+            "honey yellow": "蜜黄色",
+            "reddish-brown": "红棕色",
+            "reddish brown": "红棕色",
+            "orange": "橙色",
+            "deep emerald green": "深祖母绿色",
+            "emerald green": "祖母绿色",
+            "semi-transparent": "半透明",
+            "translucent": "透光",
+            "glossy": "光泽感",
+            "waxy": "蜡质感",
+            "vitreous luster": "玻璃光泽",
+            "bezel settings": "包镶",
+            "bezel setting": "包镶",
+            "low-profile prong settings": "低位爪镶",
+            "prong settings": "爪镶",
+            "cluster rings": "群镶戒指",
+            "earrings": "耳环",
+            "pendant accents": "吊坠点缀",
+            "irregular shapes": "不规则外形",
+            "varying sizes": "尺寸不一",
+            "secure edges": "保护边缘",
+            "custom": "定制",
+        }
+        localized = text
+        for source, target in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
+            localized = re.sub(re.escape(source), target, localized, flags=re.IGNORECASE)
+        localized = localized.replace("/", "、")
+        localized = re.sub(r"\s*,\s*", "、", localized)
+        localized = re.sub(r"\s+or\s+", "或", localized, flags=re.IGNORECASE)
+        localized = re.sub(r"\s+and\s+", "和", localized, flags=re.IGNORECASE)
+        localized = re.sub(r"\s+", " ", localized).strip()
+
+        if self._contains_latin_letters(localized):
+            fallback_by_field = {
+                "shape": "多种随形裸石，轮廓以图片识别为准",
+                "color": "多色天然玉石色调，具体以图片颜色为准",
+                "transparency": "半透明至透光质感，带自然光泽",
+                "texture": "天然纹理与光泽，以图片细节为准",
+                "setting_direction": "根据裸石不规则轮廓定制包镶或低位爪镶，保护边缘并保证佩戴稳定",
+                "risk_notes": "保留裸石原始形状、颜色、比例和天然纹理",
+                "recommended_style": "轻奢围镶风",
+                "style": "轻奢围镶风",
+            }
+            return fallback_by_field.get(field, "结合图片特征进行中文设计描述")
+        return localized
+
+    def _contains_latin_letters(self, text: str) -> bool:
+        normalized = re.sub(r"\d+\s*K", " ", text, flags=re.IGNORECASE)
+        return any("a" <= char.lower() <= "z" for char in normalized)
 
     def _is_generic_gemstone_brief_value(self, value: str) -> bool:
         normalized = value.strip().replace("，", " ").replace("。", " ").replace("；", " ")
@@ -2236,11 +2364,11 @@ class AgentService:
         payload = {
             "model": model,
             "messages": [
-                {"role": "system", "content": "你是珠宝裸石设计助理。请只输出 JSON。"},
+                {"role": "system", "content": "你是珠宝裸石设计助理。请只输出 JSON，所有字段值必须使用中文。"},
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "分析这张裸石/玉石图片，输出 count, shape, color, transparency, texture, setting_direction, risk_notes, recommended_style。"},
+                        {"type": "text", "text": "分析这张裸石/玉石图片，输出 count, shape, color, transparency, texture, setting_direction, risk_notes, recommended_style。除 count 可为数字外，其余字段必须是中文短语或中文句子，不要夹英文。"},
                         {"type": "image_url", "image_url": {"url": image_url}},
                     ],
                 },
@@ -2468,7 +2596,9 @@ class AgentService:
 
     def _required_design_slots(self, stone_analysis: dict[str, object] | None) -> list[str]:
         required = ["category", "metal", "style"]
-        if not stone_analysis:
+        if stone_analysis:
+            required.extend(["craft", "scene"])
+        else:
             required.insert(1, "gemstone")
         return required
 
@@ -2500,6 +2630,7 @@ class AgentService:
             "metal": "金属材质倾向于 18K金、玫瑰金、白金还是银？",
             "style": "风格更偏现代、复古、东方、新中式、极简，还是更商业款？",
             "craft": "工艺上希望偏爪镶、包镶、围钻、花丝、镂空，还是交给 Agent 补全？",
+            "scene": "佩戴/使用场景更偏日常通勤、晚宴聚会、收藏展示，还是婚礼礼服场合？",
         }
         if not missing:
             return "信息已经足够生成首版设计图。你可以直接点击「生成首版设计图」，也可以继续补充想强调的比例、佩戴场景或商业风格。"
@@ -2683,7 +2814,7 @@ class AgentService:
                 ("镶嵌/工艺", self._review_value(brief.get("craft"))),
                 ("风格", self._review_value(brief.get("style"))),
                 ("场景", self._review_value(brief.get("scene"))),
-                ("补充说明", self._review_value(brief.get("supplement"))),
+                ("补充说明", self._review_value(brief.get("supplement"), default="无额外补充")),
             ]
         else:
             jade_profile = self._extract_jade_brief_profile(brief)
@@ -2744,9 +2875,9 @@ class AgentService:
             return "单颗主石"
         return ""
 
-    def _review_value(self, value: object) -> str:
+    def _review_value(self, value: object, *, default: str = "待补充") -> str:
         text = str(value).strip() if value not in (None, "", [], {}) else ""
-        return text or "待补充"
+        return text or default
 
     def _format_design_brief_for_chat(self, brief: dict[str, Any], stone_analysis: dict[str, object] | None) -> str:
         labels = [
@@ -3032,6 +3163,10 @@ class AgentService:
             return DEFAULT_SKETCH_TO_REALISTIC_MODEL
         if module_key == "gemstone_design":
             return DEFAULT_GEMSTONE_DESIGN_MODEL
+        if module_key == "multi_view":
+            return DEFAULT_MULTI_VIEW_MODEL
+        if module_key == "grayscale_relief":
+            return DEFAULT_GRAYSCALE_RELIEF_MODEL
         return DEFAULT_IMAGE_MODEL
 
     def _normalize_asset_refs(self, attachments: list[AgentAssetRef], *, current_user: User) -> list[AgentAssetRef]:
@@ -3070,6 +3205,46 @@ class AgentService:
         for item in recent_assets:
             if isinstance(item, dict):
                 refs.append(AgentAssetRef.model_validate(item))
+        return self._merge_asset_refs(refs, [])
+
+    def _resolve_workflow_active_attachments(
+        self,
+        *,
+        conversation: AgentConversation,
+        content: str,
+        normalized_attachments: list[AgentAssetRef],
+    ) -> list[AgentAssetRef]:
+        if conversation.mode != "workflow":
+            return normalized_attachments or self._load_recent_assets(conversation)
+        if self._is_regenerate_intent(content):
+            module_key = self._resolve_clear_workflow_module(content)
+            previous_sources = self._load_generation_source_assets_for_module(conversation, module_key)
+            if previous_sources:
+                return previous_sources
+        return normalized_attachments or self._load_recent_assets(conversation)
+
+    def _is_regenerate_intent(self, content: str) -> bool:
+        normalized = content.strip().lower().replace(" ", "")
+        return "重新生成" in normalized or "重做" in normalized or "再来一版" in normalized or "回炉重造" in normalized
+
+    def _load_generation_source_assets_for_module(self, conversation: AgentConversation, module_key: str | None) -> list[AgentAssetRef]:
+        if not module_key:
+            return []
+        state = self._load_json(conversation.state_json) or {}
+        source_assets_by_module = state.get("generation_source_assets_by_module")
+        if not isinstance(source_assets_by_module, dict):
+            return []
+        raw_items = source_assets_by_module.get(module_key)
+        if not isinstance(raw_items, list):
+            return []
+        refs: list[AgentAssetRef] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            try:
+                refs.append(AgentAssetRef.model_validate(item))
+            except Exception:  # noqa: BLE001
+                continue
         return self._merge_asset_refs(refs, [])
 
     def _dedupe_asset_ref_payloads(self, payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
