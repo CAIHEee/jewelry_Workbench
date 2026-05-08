@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { AssetSourcePicker } from "../components/AssetSourcePicker";
+import { AutoResizeTextarea } from "../components/AutoResizeTextarea";
 import { FloatingToast } from "../components/FloatingToast";
 import { GenerationProgress } from "../components/GenerationProgress";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
 import { ResultPreviewModal } from "../components/ResultPreviewModal";
-import { getPromptTemplatesByModule } from "../data/promptTemplates";
 import { useModelCatalog } from "../hooks/useModelCatalog";
 import { submitMultiViewGeneration } from "../services/api";
 import type { GenerationJobProgress, GenerationResult } from "../types/fusion";
@@ -21,10 +21,7 @@ interface MultiViewPageProps {
   onDeleteHistory?: (historyId: string) => Promise<void> | void;
 }
 
-const multiViewTemplates = getPromptTemplatesByModule("multi-view");
-const defaultPrompt =
-  multiViewTemplates[0]?.content ??
-  "生成基于参考图的4个标准视角（正面（与参照图一致保持不变）、左侧、右侧、背面（采用正交透视法，仅展示作品本身的后部结构））并以2x2网格布局呈现，左侧、右侧、背面与参考图的风格、材质及工艺细节保持一致，所有四个视图必须来自一个连贯的三维模型。左侧、右侧、背面不得添加任何装饰、扭曲透视或虚构结构，无底座、无支架、无脚架、无支撑结构、无基座、无平衡装置。禁止在其背后或下方添加支撑，不用考虑重力，每个视图在几何上必须忠实于参考模型，柔和漫射影棚光线，优先保证细节清晰，避免过曝高光，纯白色哑光珠宝垫背景，8K高分辨率，专业珠宝摄影质感。";
+const defaultMultiViewPromptLabel = "默认多视图规则";
 const progressPhases = [
   { at: 18, label: "分析主视图结构..." },
   { at: 40, label: "提交多视图请求..." },
@@ -32,6 +29,7 @@ const progressPhases = [
   { at: 95, label: "拼合四宫格结果..." },
 ];
 const preferredMultiViewModelId = "gpt-image-2-all-apiyi";
+const allowedMultiViewModelIds = new Set(["gpt-image-2-all-apiyi", "multi-view-few-shot-apiyi"]);
 const jobProgressLabels = {
   queued: "多视图任务排队中...",
   running: "生成多角度视图中...",
@@ -41,7 +39,7 @@ const jobProgressLabels = {
 };
 
 export function MultiViewPage({ assetItems, onRecordRun, pageRuns, onDeleteHistory }: MultiViewPageProps) {
-  const { models, error: modelError, defaultModelId } = useModelCatalog((model) => model.supports_reference_images);
+  const { models, error: modelError, defaultModelId } = useModelCatalog((model) => allowedMultiViewModelIds.has(model.id));
   const multiViewDefaultModelId = useMemo(
     () => models.find((item) => item.id === preferredMultiViewModelId)?.id ?? defaultModelId,
     [defaultModelId, models],
@@ -49,6 +47,7 @@ export function MultiViewPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
   const [model, setModel] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<AssetItem[]>([]);
+  const [additionalPrompt, setAdditionalPrompt] = useState("");
   const [result, setResult] = useState<GenerationResult | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -87,23 +86,32 @@ export function MultiViewPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
   }, [uploadedPreviewUrl]);
 
   async function handleGenerate() {
+    // 立即设置 loading，防止竞态条件导致重复提交
     if (loading) {
       return;
     }
-    if (!selectedModel) {
-      setError("当前没有可用的多视图模型。");
-      return;
-    }
-
-    if (files.length === 0 && selectedAssets.length === 0) {
-      setError("请先选择一张参考图。");
-      return;
-    }
-
     setLoading(true);
     setError(null);
     setProgressState("running");
     setJobProgress({ percent: 18, label: "多视图任务排队中..." });
+
+    if (!selectedModel) {
+      setError("当前没有可用的多视图模型。");
+      setLoading(false);
+      return;
+    }
+
+    if (files.length === 0 && selectedAssets.length === 0) {
+      setError("请先选择一张原图。");
+      setLoading(false);
+      return;
+    }
+
+    if (files.length > 1) {
+      setError("多视图模型只支持上传 1 张原图。");
+      setLoading(false);
+      return;
+    }
 
     try {
       const selectedAssetRefs = selectedAssets
@@ -115,15 +123,17 @@ export function MultiViewPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
       const selectedAssetUrls = selectedAssetRefs.map((item) => item.url);
       const selectedAssetNames = selectedAssetRefs.map((item) => item.name);
       if (files.length === 0 && selectedAssetUrls.length === 0) {
-        throw new Error("未获取到可用参考图");
+        throw new Error("未获取到可用原图");
       }
 
+      const displayPrompt = additionalPrompt.trim() || defaultMultiViewPromptLabel;
+
       const response = await submitMultiViewGeneration({
-        files,
-        sourceImageUrls: files.length > 0 ? undefined : selectedAssetUrls,
-        sourceImageNames: files.length > 0 ? undefined : selectedAssetNames,
+        files: files.slice(0, 1),
+        sourceImageUrls: files.length > 0 ? undefined : selectedAssetUrls.slice(0, 1),
+        sourceImageNames: files.length > 0 ? undefined : selectedAssetNames.slice(0, 1),
         model: selectedModel.id,
-        prompt: defaultPrompt,
+        prompt: displayPrompt,
         feature: "multi_view",
       }, {
         onJobUpdate: (job) => setJobProgress(buildGenerationJobProgress(job, jobProgressLabels)),
@@ -132,6 +142,7 @@ export function MultiViewPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
         throw new Error("生成完成，但没有返回多视图结果图片，请稍后重试。");
       }
 
+      const recordedPrompt = response.revised_prompt || displayPrompt;
       setResult(response);
       setSelectedHistoryId(null);
       onRecordRun({
@@ -142,7 +153,7 @@ export function MultiViewPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
         status: response.status,
         imageUrl: response.image_url,
         sourceImageUrl: response.source_image_url ?? uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? null,
-        prompt: defaultPrompt,
+        prompt: recordedPrompt,
       });
       setJobProgress({ percent: 100, label: "已完成" });
       setProgressState("success");
@@ -179,13 +190,26 @@ export function MultiViewPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
             </label>
 
             <AssetSourcePicker
-              title="选择多视图来源"
+              title="选择多视图原图"
               assetItems={assetItems}
-              allowMultiple
-              uploadLabel="上传多视图参考图"
+              allowMultiple={false}
+              uploadLabel="上传原图"
               onUploadFilesChange={setFiles}
               onSelectedAssetsChange={setSelectedAssets}
             />
+
+            <label className="input-group compact-input-group prompt-input-group">
+              <div className="prompt-input-header compact-prompt-header">
+                <span>补充提示词</span>
+              </div>
+              <AutoResizeTextarea
+                className="prompt-textarea"
+                rows={3}
+                value={additionalPrompt}
+                onChange={(e) => setAdditionalPrompt(e.target.value)}
+                placeholder="输入额外的生成要求（可选）..."
+              />
+            </label>
 
             <GenerationProgress
               state={progressState}

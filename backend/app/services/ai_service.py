@@ -68,6 +68,17 @@ MODEL_CATALOG: dict[str, TTAPIModelConfig] = {
         supports_reference_images=True,
         pricing_hint="GPT Image 2 All via APIYI chat completions",
     ),
+    "multi-view-few-shot-apiyi": TTAPIModelConfig(
+        id="multi-view-few-shot-apiyi",
+        label="APIYI · Multi-View Few-Shot",
+        provider=ProviderType.apiyi,
+        category="image_generation",
+        upstream_model_id="gpt-image-2",
+        supports_text_to_image=False,
+        supports_multi_image_fusion=False,
+        supports_reference_images=True,
+        pricing_hint="Multi-view generation with fixed few-shot context via APIYI images/edits",
+    ),
     "gemini-3.1-flash-image-preview": TTAPIModelConfig(
         id="gemini-3.1-flash-image-preview",
         label="APIYI · Nano Banana 2",
@@ -437,6 +448,30 @@ class AIService:
         if metadata.feature != "multi_view":
             metadata = metadata.model_copy(update={"feature": "multi_view"})
 
+        # 使用 few-shot 模型时，走专用流程
+        if metadata.model == "multi-view-few-shot-apiyi":
+            return await self._generate_multi_view_with_few_shot_context(
+                file=file,
+                files=files,
+                metadata=metadata,
+                current_user=current_user,
+                source_image_url=source_image_url,
+                source_image_urls=source_image_urls,
+                stage_callback=stage_callback,
+            )
+
+        # 使用 gpt-image-2-all-apiyi 模型时，加入 5 张固定参考图
+        if metadata.model == "gpt-image-2-all-apiyi":
+            return await self._generate_multi_view_with_apiyi_gpt_image2_all_with_context(
+                file=file,
+                files=files,
+                metadata=metadata,
+                current_user=current_user,
+                source_image_url=source_image_url,
+                source_image_urls=source_image_urls,
+                stage_callback=stage_callback,
+            )
+
         submit_files = files if files is not None else ([file] if file is not None else [])
         submit_source_urls = source_image_urls if source_image_urls is not None else ([source_image_url] if source_image_url else None)
         if len(submit_files) > 1 or submit_source_urls:
@@ -454,6 +489,275 @@ class AIService:
             source_image_url=None,
             stage_callback=stage_callback,
         )
+
+    async def _generate_multi_view_with_few_shot_context(
+        self,
+        *,
+        file: UploadFile | None,
+        files: list[UploadFile] | None = None,
+        metadata: ReferenceImageRequestMetadata,
+        current_user: User,
+        source_image_url: str | None = None,
+        source_image_urls: list[str] | None = None,
+        stage_callback: Callable[[str], None] | None = None,
+    ) -> GenerationResult:
+        """使用固定 few-shot 上下文生成多视图：10 张 train 参考图 + 1 张用户原图
+        
+        使用 APIYI gpt-image-2 的 /v1/images/edits 接口（multipart/form-data）
+        支持最多 16 张参考图通过 image[] 数组传入
+        """
+        context_token = _request_user.set(current_user)
+        stage_token = _job_stage_callback.set(stage_callback)
+        model = self._get_model_or_404(metadata.model)
+
+        # 确定用户输入的原图
+        input_file = files[0] if files else file
+        if input_file is None and source_image_urls:
+            input_file = await self._build_upload_file_from_url(
+                source_image_urls[0],
+                metadata.filename or "input-image.png",
+            )
+        if input_file is None and source_image_url:
+            input_file = await self._build_upload_file_from_url(
+                source_image_url,
+                metadata.filename or "input-image.png",
+            )
+        if input_file is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="需要上传一张原图作为多视图生成的主体",
+            )
+
+        # 加载固定的 10 张 train 参考图
+        train_dir = Path(__file__).resolve().parents[3] / "multi_picture" / "train"
+        train_files = sorted(train_dir.glob("*"), key=lambda p: self._sort_key_for_train_files(p))
+        if len(train_files) < 10:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"train 目录需要 10 张参考图，但只找到 {len(train_files)} 张",
+            )
+
+        # 构建 multipart 文件列表：先 10 张参考图，最后 1 张用户原图
+        multipart_files: list[tuple[str, tuple[str, bytes, str]]] = []
+        
+        # 添加 10 张 train 参考图
+        for index, train_path in enumerate(train_files[:10]):
+            content = await asyncio.to_thread(train_path.read_bytes)
+            suffix = train_path.suffix.lower()
+            mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+            mime_type = mime_map.get(suffix, "image/png")
+            multipart_files.append(("image", (train_path.name, content, mime_type)))
+
+        # 添加用户原图（最后一张）
+        input_content = await input_file.read()
+        await input_file.seek(0)
+        input_mime = input_file.content_type or "image/png"
+        multipart_files.append(("image", (input_file.filename or "input-image.png", input_content, input_mime)))
+
+        # 构建 prompt：采用 Few-Shot 风格的三层结构
+        # 1. 前置上下文：建立角色认知和任务框架
+        # 2. 参考图说明：让模型理解每张图的作用
+        # 3. 具体任务指令：明确的输出要求
+        user_prompt = self._normalize_multi_view_user_prompt(metadata.prompt)
+        
+        prompt_parts = []
+        
+        # === 第一部分：前置上下文（建立角色认知）===
+        prompt_parts.append(
+            "【角色定义】\n"
+            "你是一个专业的珠宝多视图生成专家，精通珠宝摄影、三维建模和工业设计。"
+            "你的任务是根据提供的参考图和原图，生成高质量的四视图产品图。"
+        )
+        
+        # === 第二部分：Few-Shot 上下文说明（建立图片认知）===
+        prompt_parts.append(
+            "\n【输入图片说明】\n"
+            "我将提供 11 张图片给你：\n"
+            "- 图1 ~ 图10：这些是珠宝摄影的风格参考图，展示了专业的拍摄手法。"
+            "请学习这些图片中的：\n"
+            "  • 摄影光线：柔和的漫射光，避免过曝高光\n"
+            "  • 金属质感：黄金/白金的光泽表现方式\n"
+            "  • 宝石镶嵌：钻石、翡翠等宝石的呈现方式\n"
+            "  • 背景处理：纯白色或珠宝垫背景\n"
+            "  • 画面洁净度：专业的后期处理水准\n"
+            "  • 8K 高分辨率的细节表现\n"
+            "- 图11：这是需要生成多视图的原图主体，是你需要处理的珠宝产品。"
+        )
+        
+        # === 第三部分：具体任务指令（明确输出要求）===
+        prompt_parts.append(
+            "\n【任务要求】\n"
+            "请基于图11 的珠宝主体，生成标准的四视图产品图：\n"
+            "1. 视角要求：\n"
+            "   • 正面视图（Front View）：与图11 的视角保持一致\n"
+            "   • 左侧视图（Left Side View）：从左侧 90 度观察\n"
+            "   • 右侧视图（Right Side View）：从右侧 90 度观察\n"
+            "   • 背面视图（Back View）：采用正交透视法，仅展示作品本身的后部结构\n"
+            "2. 布局要求：\n"
+            "   • 以 2x2 网格排列四个视图\n"
+            "   • 每个视图之间用白色细线分隔\n"
+            "   • 整体背景为纯白色\n"
+            "3. 一致性要求：\n"
+            "   • 四个视图必须来自同一个三维模型，保持几何一致性\n"
+            "   • 保持图11 的主体身份、结构和比例\n"
+            "   • 吸收图1~图10 的风格、材质和工艺细节\n"
+            "4. 禁止事项：\n"
+            "   • 不得添加任何装饰、扭曲透视或虚构结构\n"
+            "   • 无底座、无支架、无脚架、无支撑结构、无基座\n"
+            "   • 禁止在背面或下方添加支撑\n"
+            "   • 不用考虑重力，专注展示珠宝本身"
+        )
+        
+        # 添加用户自定义补充要求
+        if user_prompt:
+            prompt_parts.append(
+                f"\n【补充要求】\n{user_prompt}"
+            )
+        
+        prompt = "\n".join(prompt_parts)
+
+        try:
+            # 调用 APIYI /v1/images/edits 接口（multipart/form-data）
+            data = await self._post_multipart_with_bearer_base_url(
+                base_url=self.settings.apiyi_openai_base_url,
+                path="/images/edits",
+                api_key=self._require_apiyi_api_key(),
+                data={
+                    "model": model.upstream_model_id,
+                    "prompt": prompt,
+                    "size": "2048x2048",
+                    "n": "1",
+                },
+                files=multipart_files,
+                timeout=self.settings.apiyi_timeout_seconds,
+            )
+
+            # 从响应中提取 b64_json（纯 base64，无前缀）
+            image_data = data.get("data", [{}])[0] if data.get("data") else {}
+            b64_json = image_data.get("b64_json")
+            if not b64_json:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="API 返回数据中没有 b64_json 字段",
+                )
+
+            # 保存生成的图片
+            stored_asset = await self._store_generated_binary_asset(
+                image_bytes=base64.b64decode(b64_json),
+                content_type="image/png",
+                kind="multi_view",
+                model=model.id,
+                preferred_name=metadata.filename or "multi-view-few-shot.png",
+            )
+
+            result = GenerationResult(
+                job_id=self._extract_job_id(data),
+                status="completed" if stored_asset["access_url"] else "failed",
+                provider=model.provider,
+                model=model.id,
+                image_url=stored_asset["access_url"],
+                revised_prompt=prompt,
+                message="Few-shot multi-view generation completed." if stored_asset["access_url"] else "No asset returned.",
+                raw_response=data,
+            ).model_copy(update=self._build_reference_result_update(metadata))
+
+            if result.image_url:
+                self._persist_history(
+                    kind="multi_view",
+                    title=self._feature_title("multi_view", model.label),
+                    model_id=model.id,
+                    provider=model.provider.value,
+                    status=result.status,
+                    prompt=prompt,
+                    job_id=result.job_id,
+                    image_url=result.image_url,
+                    storage_url=stored_asset["storage_url"],
+                    metadata={
+                        "upstream_platform": "apiyi",
+                        "upstream_api": "images_edits_few_shot",
+                        "upstream_model": model.upstream_model_id,
+                        "train_reference_count": 10,
+                        "original_prompt": metadata.prompt,
+                        **stored_asset["metadata"],
+                    },
+                )
+            return result
+        finally:
+            _job_stage_callback.reset(stage_token)
+            _request_user.reset(context_token)
+
+    async def _generate_multi_view_with_apiyi_gpt_image2_all_with_context(
+        self,
+        *,
+        file: UploadFile | None,
+        files: list[UploadFile] | None = None,
+        metadata: ReferenceImageRequestMetadata,
+        current_user: User,
+        source_image_url: str | None = None,
+        source_image_urls: list[str] | None = None,
+        stage_callback: Callable[[str], None] | None = None,
+    ) -> GenerationResult:
+        """使用 gpt-image-2-all-apiyi 模型生成多视图，加入 5 张固定 train 参考图"""
+        context_token = _request_user.set(current_user)
+        stage_token = _job_stage_callback.set(stage_callback)
+        model = self._get_model_or_404(metadata.model)
+
+        # 加载固定的 5 张 train 参考图
+        train_dir = Path(__file__).resolve().parents[3] / "multi_picture" / "train"
+        train_files = sorted(train_dir.glob("*"), key=lambda p: self._sort_key_for_train_files(p))
+        if len(train_files) < 5:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"train 目录需要 5 张参考图，但只找到 {len(train_files)} 张",
+            )
+
+        # 确定用户输入的原图
+        input_file = files[0] if files else file
+        if input_file is None and source_image_urls:
+            input_file = await self._build_upload_file_from_url(
+                source_image_urls[0],
+                metadata.filename or "input-image.png",
+            )
+        if input_file is None and source_image_url:
+            input_file = await self._build_upload_file_from_url(
+                source_image_url,
+                metadata.filename or "input-image.png",
+            )
+        if input_file is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="需要上传一张原图作为多视图生成的主体",
+            )
+
+        # 合并 5 张参考图和 1 张用户原图
+        combined_files: list[UploadFile] = []
+        for train_path in train_files[:5]:
+            content = await asyncio.to_thread(train_path.read_bytes)
+            suffix = train_path.suffix.lower()
+            mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+            mime_type = mime_map.get(suffix, "image/png")
+            combined_files.append(
+                UploadFile(
+                    filename=train_path.name,
+                    file=BytesIO(content),
+                    size=len(content),
+                    headers=Headers({"content-type": mime_type}),
+                )
+            )
+        combined_files.append(input_file)
+
+        # 更新 metadata 的 image_count 为 6
+        updated_metadata = metadata.model_copy(update={"image_count": 6})
+
+        try:
+            return await self._transform_with_apiyi_gpt_image2_all(
+                files=combined_files,
+                metadata=updated_metadata,
+                model=model,
+            )
+        finally:
+            _job_stage_callback.reset(stage_token)
+            _request_user.reset(context_token)
 
     async def split_multi_view_image(
         self,
@@ -924,7 +1228,7 @@ class AIService:
                 model_id=model.id,
                 provider=model.provider.value,
                 status=result.status,
-                prompt=metadata.prompt,
+                prompt=full_prompt,
                 job_id=result.job_id,
                 image_url=result.image_url,
                 storage_url=stored_asset["storage_url"],
@@ -1127,8 +1431,9 @@ class AIService:
         metadata: ReferenceImageRequestMetadata,
         model: TTAPIModelConfig,
     ) -> GenerationResult:
-        prompt = self._build_apiyi_reference_prompt(metadata)
-        data = await self._post_apiyi_gpt_image2_chat(model=model, prompt=prompt, files=files)
+        # 构建实际发送给 API 的完整提示词
+        full_prompt = self._build_apiyi_reference_prompt(metadata)
+        data = await self._post_apiyi_gpt_image2_chat(model=model, prompt=full_prompt, files=files)
         upstream_image_url = self._extract_chat_completion_image_url(data)
         stored_asset = await self._store_generated_asset(
             image_url=upstream_image_url,
@@ -1142,10 +1447,12 @@ class AIService:
             provider=model.provider,
             model=model.id,
             image_url=stored_asset["access_url"],
+            revised_prompt=full_prompt,
             message="Reference image transform completed." if stored_asset["access_url"] else "Reference image transform returned no asset.",
             raw_response=data,
         ).model_copy(update=self._build_reference_result_update(metadata))
         if result.image_url:
+            # 历史记录保存实际使用的完整提示词，而不是前端传入的原始 prompt
             self._persist_history(
                 kind=self._map_feature_to_history_kind(metadata.feature),
                 title=self._feature_title(metadata.feature, model.label),
@@ -1160,6 +1467,7 @@ class AIService:
                     "upstream_platform": "apiyi",
                     "upstream_api": "chat_completions",
                     "upstream_model": model.upstream_model_id,
+                    "original_prompt": metadata.prompt,
                     **stored_asset["metadata"],
                     **self._build_reference_history_metadata(metadata),
                 },
@@ -2043,8 +2351,70 @@ class AIService:
         )
 
     def _build_apiyi_reference_prompt(self, metadata: ReferenceImageRequestMetadata) -> str:
-        prompt = metadata.prompt.strip()
-        if metadata.feature != "multi_view" or metadata.image_count <= 1:
+        prompt = self._normalize_multi_view_user_prompt(metadata.prompt) if metadata.feature == "multi_view" else metadata.prompt.strip()
+        if metadata.feature != "multi_view":
+            return prompt
+        
+        # 针对 6 张图片（5 张参考 +1 张原图）的 Few-Shot 风格提示词
+        if metadata.image_count == 6:
+            prompt_parts = []
+            
+            # 第一部分：角色定义
+            prompt_parts.append(
+                "【角色定义】\n"
+                "你是一个专业的珠宝多视图生成专家，精通珠宝摄影、三维建模和工业设计。"
+                "你的任务是根据提供的参考图和原图，生成高质量的四视图产品图。"
+            )
+            
+            # 第二部分：Few-Shot 上下文说明
+            prompt_parts.append(
+                "\n【输入图片说明】\n"
+                "我将提供 6 张图片给你：\n"
+                "- 图1 ~ 图5：这些是珠宝摄影的风格参考图，展示了专业的拍摄手法。"
+                "请学习这些图片中的：\n"
+                "  • 摄影光线：柔和的漫射光，避免过曝高光\n"
+                "  • 金属质感：黄金/白金的光泽表现方式\n"
+                "  • 宝石镶嵌：钻石、翡翠等宝石的呈现方式\n"
+                "  • 背景处理：纯白色或珠宝垫背景\n"
+                "  • 画面洁净度：专业的后期处理水准\n"
+                "  • 8K 高分辨率的细节表现\n"
+                "- 图6：这是需要生成多视图的原图主体，是你需要处理的珠宝产品。"
+            )
+            
+            # 第三部分：具体任务指令
+            prompt_parts.append(
+                "\n【任务要求】\n"
+                "请基于图6 的珠宝主体，生成标准的四视图产品图：\n"
+                "1. 视角要求：\n"
+                "   • 正面视图（Front View）：与图6 的视角保持一致\n"
+                "   • 左侧视图（Left Side View）：从左侧 90 度观察\n"
+                "   • 右侧视图（Right Side View）：从右侧 90 度观察\n"
+                "   • 背面视图（Back View）：采用正交透视法，仅展示作品本身的后部结构\n"
+                "2. 布局要求：\n"
+                "   • 以 2x2 网格排列四个视图\n"
+                "   • 整体背景为白色\n"
+                "3. 一致性要求：\n"
+                "   • 四个视图必须来自同一个三维模型，保持几何一致性\n"
+                "   • 保持图6 的主体身份、结构和比例\n"
+                "   • 吸收图1~图5 的风格、材质和工艺细节\n"
+                "   • 合理想象图6的背面视图结构，不要过于扁平，保持整体立体感\n"
+                "4. 禁止事项：\n"
+                "   • 不得添加任何装饰、扭曲透视或虚构结构\n"
+                "   • 无底座、无支架、无脚架、无支撑结构、无基座\n"
+                "   • 禁止在背面或下方添加支撑\n"
+                "   • 不用考虑重力，专注展示珠宝本身"
+            )
+            
+            # 添加用户自定义补充要求
+            if prompt:
+                prompt_parts.append(
+                    f"\n【补充要求】\n{prompt}"
+                )
+            
+            return "\n".join(prompt_parts)
+        
+        # 其他情况使用原有的通用提示词
+        if metadata.image_count <= 1:
             return prompt
         return (
             "这是一个带上下文参考图的多视图生成任务。"
@@ -2272,6 +2642,23 @@ class AIService:
         mime_type = file.content_type or "image/png"
         encoded = base64.b64encode(content).decode("utf-8")
         return f"data:{mime_type};base64,{encoded}"
+
+    async def _file_to_data_url_from_path(self, path: Path) -> str:
+        """从文件路径读取并转换为 base64 data URL"""
+        content = await asyncio.to_thread(path.read_bytes)
+        suffix = path.suffix.lower()
+        mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+        mime_type = mime_map.get(suffix, "image/png")
+        encoded = base64.b64encode(content).decode("utf-8")
+        return f"data:{mime_type};base64,{encoded}"
+
+    def _sort_key_for_train_files(self, path: Path) -> int:
+        """从文件名提取数字序号用于排序（如 1.png -> 1, 10.png -> 10）"""
+        stem = path.stem
+        try:
+            return int(stem)
+        except ValueError:
+            return 9999
 
     async def _build_multipart_file(self, file: UploadFile) -> tuple[str, tuple[str, bytes, str]]:
         content = await file.read()
@@ -2669,6 +3056,21 @@ class AIService:
             "image/webp": ".webp",
         }
         return mapping.get(content_type.lower(), ".png")
+
+    def _normalize_multi_view_user_prompt(self, prompt: str | None) -> str:
+        if not prompt:
+            return ""
+        normalized = prompt.strip()
+        if normalized in {"默认多视图规则", "生成多视图", "默认规则"}:
+            return ""
+        legacy_default_fragments = (
+            "生成基于参考图的4个标准视角",
+            "所有四个视图必须来自一个连贯的三维模型",
+            "纯白色哑光珠宝垫背景",
+        )
+        if all(fragment in normalized for fragment in legacy_default_fragments):
+            return ""
+        return normalized
 
     def _build_reference_history_metadata(self, metadata: ReferenceImageRequestMetadata) -> dict[str, object]:
         payload: dict[str, object] = {

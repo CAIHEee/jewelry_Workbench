@@ -19,9 +19,11 @@ def test_model_catalog_exposes_expected_models(client: TestClient) -> None:
     model_ids = set(models)
     assert model_ids == {
         "gpt-image-2-all-apiyi",
+        "multi-view-few-shot-apiyi",
         "gemini-3.1-flash-image-preview",
     }
     assert "gpt-image-2-all-apiyi" in model_ids
+    assert "multi-view-few-shot-apiyi" in model_ids
     assert "gpt-image-2-aiapis" not in model_ids
     assert "gpt-image-2-wuyin" not in model_ids
     assert "gpt-image-2-dmxapi" not in model_ids
@@ -34,6 +36,11 @@ def test_model_catalog_exposes_expected_models(client: TestClient) -> None:
     assert models["gpt-image-2-all-apiyi"]["supports_reference_images"] is True
     assert models["gpt-image-2-all-apiyi"]["provider"] == "apiyi"
     assert models["gpt-image-2-all-apiyi"]["label"].startswith("APIYI")
+    assert models["multi-view-few-shot-apiyi"]["supports_text_to_image"] is False
+    assert models["multi-view-few-shot-apiyi"]["supports_multi_image_fusion"] is False
+    assert models["multi-view-few-shot-apiyi"]["supports_reference_images"] is True
+    assert models["multi-view-few-shot-apiyi"]["provider"] == "apiyi"
+    assert models["multi-view-few-shot-apiyi"]["label"].startswith("APIYI")
     assert models["gemini-3.1-flash-image-preview"]["supports_text_to_image"] is True
     assert models["gemini-3.1-flash-image-preview"]["supports_multi_image_fusion"] is True
     assert models["gemini-3.1-flash-image-preview"]["supports_reference_images"] is True

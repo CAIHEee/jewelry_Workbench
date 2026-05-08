@@ -86,6 +86,23 @@ function normalizeHistoryTextForDedupe(value: string | null | undefined): string
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
+function normalizeDisplayPrompt(kind: NormalizedHistoryKind, prompt: string): string {
+  if (kind !== "multi_view") {
+    return prompt;
+  }
+
+  const normalized = prompt.trim();
+  const legacyDefaultFragments = [
+    "生成基于参考图的4个标准视角",
+    "所有四个视图必须来自一个连贯的三维模型",
+    "纯白色哑光珠宝垫背景",
+  ];
+  if (legacyDefaultFragments.every((fragment) => normalized.includes(fragment))) {
+    return "默认多视图规则";
+  }
+  return normalized || "默认多视图规则";
+}
+
 const KIND_LABEL_MAP: Record<NormalizedHistoryKind, string> = {
   text_to_image: "\u6587\u751f\u56fe",
   fusion: "\u591a\u56fe\u878d\u5408",
@@ -161,7 +178,7 @@ export function toModuleHistoryEntry(item: PersistedHistoryItem | WorkspaceRun):
       model: item.model,
       provider: item.provider,
       status: item.status,
-      prompt: item.prompt,
+      prompt: normalizeDisplayPrompt(normalizedKind, item.prompt),
       imageUrl: isBrowserObjectUrl(item.imageUrl) ? null : item.imageUrl,
       sourceImageUrl: isBrowserObjectUrl(item.sourceImageUrl) ? null : (item.sourceImageUrl ?? item.sourceImages?.[0] ?? null),
       sourceImages: (item.sourceImages ?? []).filter((entry): entry is string => Boolean(entry) && !isBrowserObjectUrl(entry)),
@@ -189,7 +206,7 @@ export function toModuleHistoryEntry(item: PersistedHistoryItem | WorkspaceRun):
     model: item.model,
     provider: item.provider,
     status: item.status,
-    prompt: item.prompt,
+    prompt: normalizeDisplayPrompt(normalizedKind, item.prompt),
     imageUrl: resolveStableAssetUrl(item.storage_url, item.preview_url ?? item.image_url, item.title),
     sourceImageUrl: extractSourceImageUrl(item.metadata ?? null),
     sourceImages: extractSourceImages(item.metadata ?? null),
@@ -206,12 +223,21 @@ export function buildModuleHistoryDedupeKey(item: ModuleHistoryEntry): string {
     return buildModuleHistorySplitDedupeKey(item);
   }
 
+  const comparableImageUrl = normalizeComparableUrl(item.imageUrl);
+  if (comparableImageUrl) {
+    return [
+      item.kind,
+      normalizeHistoryTextForDedupe(item.model),
+      normalizeHistoryTextForDedupe(item.provider),
+      comparableImageUrl,
+    ].join("|");
+  }
+
   return [
     item.kind,
     normalizeHistoryTextForDedupe(item.model),
     normalizeHistoryTextForDedupe(item.provider),
     normalizeHistoryTextForDedupe(item.prompt),
-    normalizeComparableUrl(item.imageUrl),
   ].join("|");
 }
 

@@ -160,12 +160,18 @@ class HistoryService:
         seen: set[str] = set()
         deduped: list[HistoryRecord] = []
         for item in items:
-            dedupe_key = f"{item.storage_url or item.image_url or item.id}|{item.title}|{item.created_at.isoformat()}"
+            dedupe_key = self._build_dedupe_key(item)
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
             deduped.append(item)
         return deduped
+
+    def _build_dedupe_key(self, item: HistoryRecord) -> str:
+        result_url = item.storage_url or item.image_url
+        if result_url:
+            return f"{item.user_id or ''}|{item.kind}|{item.model}|{item.provider}|{result_url}"
+        return f"{item.user_id or ''}|{item.kind}|{item.model}|{item.provider}|{item.prompt}|{item.created_at.isoformat()}"
 
     def _with_source_preview_metadata(self, metadata: dict[str, object] | None) -> dict[str, object] | None:
         if metadata is None:
