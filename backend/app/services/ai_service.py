@@ -427,22 +427,31 @@ class AIService:
         self,
         *,
         file: UploadFile | None,
+        files: list[UploadFile] | None = None,
         metadata: ReferenceImageRequestMetadata,
         current_user: User,
         source_image_url: str | None = None,
+        source_image_urls: list[str] | None = None,
         stage_callback: Callable[[str], None] | None = None,
     ) -> GenerationResult:
         if metadata.feature != "multi_view":
             metadata = metadata.model_copy(update={"feature": "multi_view"})
 
-        # Multi-view is still backed by reference-image generation upstream,
-        # but we keep a dedicated service entry so the route, history metadata,
-        # and future provider-specific handling stay isolated from generic edits.
+        submit_files = files if files is not None else ([file] if file is not None else [])
+        submit_source_urls = source_image_urls if source_image_urls is not None else ([source_image_url] if source_image_url else None)
+        if len(submit_files) > 1 or submit_source_urls:
+            return await self.transform_reference_images(
+                files=submit_files,
+                metadata=metadata,
+                current_user=current_user,
+                source_image_urls=submit_source_urls,
+                stage_callback=stage_callback,
+            )
         return await self.transform_reference_image(
-            file=file,
+            file=submit_files[0] if submit_files else None,
             metadata=metadata,
             current_user=current_user,
-            source_image_url=source_image_url,
+            source_image_url=None,
             stage_callback=stage_callback,
         )
 
@@ -1118,7 +1127,8 @@ class AIService:
         metadata: ReferenceImageRequestMetadata,
         model: TTAPIModelConfig,
     ) -> GenerationResult:
-        data = await self._post_apiyi_gpt_image2_chat(model=model, prompt=metadata.prompt, files=files)
+        prompt = self._build_apiyi_reference_prompt(metadata)
+        data = await self._post_apiyi_gpt_image2_chat(model=model, prompt=prompt, files=files)
         upstream_image_url = self._extract_chat_completion_image_url(data)
         stored_asset = await self._store_generated_asset(
             image_url=upstream_image_url,
@@ -2001,7 +2011,11 @@ class AIService:
         content: str | list[dict[str, Any]]
         if files:
             content_parts: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-            for file in files:
+            for index, file in enumerate(files):
+                filename = file.filename or f"reference-{index + 1}.png"
+                if len(files) > 1:
+                    role_text = "待生成多视图的原图" if index == len(files) - 1 else f"风格参考图 {index + 1}"
+                    content_parts.append({"type": "text", "text": f"{role_text}：{filename}"})
                 content_parts.append(
                     {
                         "type": "image_url",
@@ -2026,6 +2040,18 @@ class AIService:
                 ],
             },
             timeout=self.settings.apiyi_timeout_seconds,
+        )
+
+    def _build_apiyi_reference_prompt(self, metadata: ReferenceImageRequestMetadata) -> str:
+        prompt = metadata.prompt.strip()
+        if metadata.feature != "multi_view" or metadata.image_count <= 1:
+            return prompt
+        return (
+            "这是一个带上下文参考图的多视图生成任务。"
+            "输入图片按顺序理解：前面的图片都是风格、材质、光线、背景和工艺细节参考；最后一张图片是必须生成四视图的原图主体。"
+            "请只基于最后一张原图的主体结构生成正面、左侧、右侧、背面四个视角，保持主体身份和几何一致；"
+            "同时吸收前面参考图的摄影风格、珠宝质感、金属/宝石细节、画面洁净度和光照方式。"
+            f"\n\n具体生成要求：{prompt}"
         )
 
     async def _post_json_with_bearer_base_url(
@@ -2366,11 +2392,19 @@ class AIService:
         if isinstance(data_field, list):
             for item in data_field:
                 if isinstance(item, dict):
+                    b64_json = item.get("b64_json")
+                    if isinstance(b64_json, str) and b64_json:
+                        mime_type = item.get("mime_type") if isinstance(item.get("mime_type"), str) else "image/png"
+                        return f"data:{mime_type};base64,{b64_json}"
                     for key in ("url", "image_url"):
                         value = item.get(key)
                         if isinstance(value, str):
                             return value
         if isinstance(data_field, dict):
+            b64_json = data_field.get("b64_json")
+            if isinstance(b64_json, str) and b64_json:
+                mime_type = data_field.get("mime_type") if isinstance(data_field.get("mime_type"), str) else "image/png"
+                return f"data:{mime_type};base64,{b64_json}"
             for key in ("url", "image_url", "result_url", "imageUrl"):
                 value = data_field.get(key)
                 if isinstance(value, str):

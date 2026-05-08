@@ -1,6 +1,11 @@
+import asyncio
+from io import BytesIO
+
+from fastapi import UploadFile
 from fastapi.testclient import TestClient
 
 from app.api.v1.routes.ai import cache_service
+from app.schemas.ai import ReferenceImageRequestMetadata
 from app.services.ai_service import AIService
 
 
@@ -49,6 +54,67 @@ def test_extracts_apiyi_chat_completion_image_url() -> None:
     }
 
     assert service._extract_chat_completion_image_url(data) == "https://cdn.example.com/generated.png"
+
+
+def test_extracts_apiyi_chat_completion_data_b64_json() -> None:
+    service = AIService()
+    data = {"data": [{"b64_json": "ZmFrZS1pbWFnZQ=="}]}
+
+    assert service._extract_chat_completion_image_url(data) == "data:image/png;base64,ZmFrZS1pbWFnZQ=="
+
+
+def test_builds_apiyi_multi_view_context_prompt() -> None:
+    service = AIService()
+    metadata = ReferenceImageRequestMetadata(
+        model="gpt-image-2-all-apiyi",
+        prompt="生成标准四视图",
+        feature="multi_view",
+        filename="style.png",
+        image_count=3,
+    )
+
+    prompt = service._build_apiyi_reference_prompt(metadata)
+
+    assert "前面的图片都是风格" in prompt
+    assert "最后一张图片是必须生成四视图的原图主体" in prompt
+    assert "生成标准四视图" in prompt
+
+
+def test_apiyi_chat_payload_marks_reference_and_source_images(monkeypatch) -> None:
+    service = AIService()
+    monkeypatch.setattr(service, "_require_apiyi_api_key", lambda: "test-key")
+
+    captured: dict[str, object] = {}
+
+    async def fake_post_json_with_bearer(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+        return {"data": [{"url": "https://example.com/result.png"}]}
+
+    monkeypatch.setattr(service, "_post_json_with_bearer", fake_post_json_with_bearer)
+
+    async def run_request() -> None:
+        files = [
+            UploadFile(filename="style-a.png", file=BytesIO(b"style-a")),
+            UploadFile(filename="style-b.png", file=BytesIO(b"style-b")),
+            UploadFile(filename="source.png", file=BytesIO(b"source")),
+        ]
+        await service._post_apiyi_gpt_image2_chat(
+            model=service._get_model_or_404("gpt-image-2-all-apiyi"),
+            prompt="生成多视图",
+            files=files,
+        )
+
+        for item in files:
+            item.file.close()
+
+    asyncio.run(run_request())
+
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    content = payload["messages"][0]["content"]
+    assert content[1]["text"] == "风格参考图 1：style-a.png"
+    assert content[3]["text"] == "风格参考图 2：style-b.png"
+    assert content[5]["text"] == "待生成多视图的原图：source.png"
 
 
 def test_text_to_image_rejects_unknown_model(auth_client: TestClient) -> None:

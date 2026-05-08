@@ -271,7 +271,7 @@ class JobQueueService:
                 file=None,
                 metadata=metadata,
                 current_user=current_user,
-                source_image_url=source_image_urls[0] if source_image_urls else None,
+                source_image_urls=source_image_urls or None,
                 stage_callback=stage_callback,
             )
             return result.model_dump(mode="json")

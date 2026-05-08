@@ -281,17 +281,30 @@ async def upscale(
 @router.post("/multi-view", response_model=GenerationResult)
 async def multi_view_generation(
     image: UploadFile | None = File(default=None),
+    images: list[UploadFile] | None = File(default=None),
     prompt: str = Form(...),
     model: str = Form(...),
     source_image_url: str | None = Form(default=None),
     source_image_name: str | None = Form(default=None),
+    source_image_urls_json: str | None = Form(default=None),
+    source_image_names_json: str | None = Form(default=None),
     negative_prompt: str | None = Form(default=None),
     strength: float = Form(default=0.75),
     image_size: str = Form(default="1K"),
     current_user: User = Depends(require_module("multi_view")),
 ) -> GenerationResult:
-    if image is None and not source_image_url:
+    source_image_urls = _parse_string_array_json(source_image_urls_json, field_name="source_image_urls_json")
+    source_image_names = _parse_string_array_json(source_image_names_json, field_name="source_image_names_json")
+    image_files = [*(images or [])]
+    if image is not None:
+        image_files = [image, *image_files]
+    if source_image_url:
+        source_image_urls = [source_image_url, *source_image_urls]
+        source_image_names = [source_image_name or "multi-view-reference.png", *source_image_names]
+    if not image_files and not source_image_urls:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Either image or source_image_url is required.")
+    if source_image_urls and source_image_names and len(source_image_urls) != len(source_image_names):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="source_image_urls_json and source_image_names_json must have the same length.")
 
     metadata = ReferenceImageRequestMetadata(
         model=model,
@@ -300,9 +313,19 @@ async def multi_view_generation(
         feature="multi_view",
         strength=strength,
         image_size=image_size,
-        filename=(image.filename if image else source_image_name) or "multi-view-reference.png",
+        image_count=len(image_files) if image_files else len(source_image_urls),
+        filename=(image_files[0].filename if image_files else source_image_names[0] if source_image_names else source_image_name) or "multi-view-reference.png",
+        filenames=[file.filename or f"reference-{index + 1}.png" for index, file in enumerate(image_files)]
+        if image_files
+        else source_image_names,
     )
-    return await service.generate_multi_view(file=image, metadata=metadata, current_user=current_user, source_image_url=source_image_url)
+    return await service.generate_multi_view(
+        file=None,
+        files=image_files,
+        metadata=metadata,
+        current_user=current_user,
+        source_image_urls=source_image_urls,
+    )
 
 
 @router.post("/split-multi-view", response_model=MultiViewSplitResponse)

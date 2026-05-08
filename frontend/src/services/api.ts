@@ -635,7 +635,14 @@ export async function submitReferenceModuleTransform(path: string, payload: Refe
 
 export async function submitMultiViewGeneration(payload: ReferenceImageTransformRequest, options?: JobWaitOptions): Promise<GenerationResult> {
   const formData = new FormData();
+  payload.files?.forEach((file) => formData.append("images", file));
   if (payload.file) formData.append("image", payload.file);
+  if (payload.sourceImageUrls?.length) {
+    formData.append("source_image_urls_json", JSON.stringify(payload.sourceImageUrls));
+  }
+  if (payload.sourceImageNames?.length) {
+    formData.append("source_image_names_json", JSON.stringify(payload.sourceImageNames));
+  }
   if (payload.sourceImageUrl) formData.append("source_image_url", payload.sourceImageUrl);
   if (payload.sourceImageName) formData.append("source_image_name", payload.sourceImageName);
   formData.append("model", payload.model);

@@ -106,17 +106,22 @@ export function MultiViewPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
     setJobProgress({ percent: 18, label: "多视图任务排队中..." });
 
     try {
-      const selectedAsset = selectedAssets[0] ?? null;
-      const selectedAssetUrl = selectedAsset?.fileUrl ?? selectedAsset?.previewUrl ?? selectedAsset?.storageUrl ?? null;
-      const inputFile = files[0] ?? null;
-      if (!inputFile && !selectedAssetUrl) {
+      const selectedAssetRefs = selectedAssets
+        .map((asset) => ({
+          url: asset.fileUrl ?? asset.previewUrl ?? asset.storageUrl ?? null,
+          name: asset.name,
+        }))
+        .filter((item): item is { url: string; name: string } => Boolean(item.url));
+      const selectedAssetUrls = selectedAssetRefs.map((item) => item.url);
+      const selectedAssetNames = selectedAssetRefs.map((item) => item.name);
+      if (files.length === 0 && selectedAssetUrls.length === 0) {
         throw new Error("未获取到可用参考图");
       }
 
       const response = await submitMultiViewGeneration({
-        file: inputFile,
-        sourceImageUrl: inputFile ? undefined : selectedAssetUrl ?? undefined,
-        sourceImageName: inputFile ? undefined : selectedAsset?.name,
+        files,
+        sourceImageUrls: files.length > 0 ? undefined : selectedAssetUrls,
+        sourceImageNames: files.length > 0 ? undefined : selectedAssetNames,
         model: selectedModel.id,
         prompt: defaultPrompt,
         feature: "multi_view",
@@ -176,6 +181,7 @@ export function MultiViewPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
             <AssetSourcePicker
               title="选择多视图来源"
               assetItems={assetItems}
+              allowMultiple
               uploadLabel="上传多视图参考图"
               onUploadFilesChange={setFiles}
               onSelectedAssetsChange={setSelectedAssets}
