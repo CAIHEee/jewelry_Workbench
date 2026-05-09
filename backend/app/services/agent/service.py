@@ -2065,26 +2065,29 @@ class AgentService:
                 brief.pop(slot, None)
             return
         lowered = stripped.lower()
+        answered_pending_slot = False
         if pending_slot in {"category", "concept", "gemstone", "metal", "style", "craft", "scene"} and len(stripped) <= 36:
             brief[pending_slot] = self._normalize_design_slot_value(pending_slot, stripped)
-            return
+            answered_pending_slot = True
         category = self._first_matching_phrase(stripped, ["戒指", "吊坠", "项链", "耳环", "耳坠", "胸针", "手镯", "手链"])
         if category:
             brief["category"] = category
         style = self._first_matching_phrase(stripped, ["Art Deco", "art deco", "复古", "现代", "中式", "东方", "宫廷", "极简", "自然", "新中式", "轻奢", "法式", "华丽", "简约"])
-        if style:
+        if style and pending_slot != "style":
             brief["style"] = "Art Deco" if style.lower() == "art deco" else style
         metal = self._first_matching_phrase(stripped, ["18K金", "18k金", "18K", "18k", "玫瑰金", "黄金", "白金", "铂金", "银", "K金"])
-        if metal:
+        if metal and pending_slot != "metal":
             brief["metal"] = "18K金" if metal.lower() in {"18k金", "18k"} else metal
-        gemstone = self._first_matching_phrase(stripped, ["祖母绿", "翡翠", "和田玉", "玉", "钻石", "钻", "红宝石", "红宝", "蓝宝石", "蓝宝", "珍珠", "裸石"])
+        gemstone = self._extract_gemstone_phrase(stripped)
         if gemstone:
-            brief["gemstone"] = gemstone
+            current_gemstone = str(brief.get("gemstone") or "").strip()
+            if not current_gemstone or pending_slot == "gemstone" or self._is_generic_gemstone_brief_value(current_gemstone):
+                brief["gemstone"] = gemstone
         craft = self._first_matching_phrase(stripped, ["爪镶", "包镶", "围钻", "花丝", "镂空", "雕刻", "微镶", "密镶", "镶嵌"])
         if craft:
             brief["craft"] = craft
         scene = self._first_matching_phrase(stripped, ["日常", "通勤", "婚礼", "礼服", "商务", "收藏", "展会", "晚宴"])
-        if scene:
+        if scene and pending_slot != "scene":
             brief["scene"] = scene
         upload_reference_markers = (
             "这是我要设计镶嵌的裸石",
@@ -2096,11 +2099,34 @@ class AgentService:
             "这块玉",
             "这块裸石",
         )
-        if lowered not in {"整理设计理念", "生成首版设计图", "优化提示词"} and not any(marker in stripped for marker in upload_reference_markers):
+        if (
+            not answered_pending_slot
+            and lowered not in {"整理设计理念", "生成首版设计图", "优化提示词"}
+            and not any(marker in stripped for marker in upload_reference_markers)
+        ):
             brief["concept"] = stripped
             if not any([category, style, metal, gemstone, craft, scene]):
                 previous = str(brief.get("supplement") or "")
                 brief["supplement"] = f"{previous}\n{stripped}".strip()
+
+    def _extract_gemstone_phrase(self, text: str) -> str | None:
+        normalized = text.strip()
+        jade_profile = self._extract_jade_profile_from_text(normalized)
+        jade_parts = [jade_profile.get("water"), jade_profile.get("color"), self._jade_shape_phrase(normalized, jade_profile.get("shape") or "")]
+        if any(jade_parts) or any(token in normalized for token in ("翡翠", "玉", "翠")):
+            parts = [item for item in jade_parts if item]
+            if "翡翠" not in "".join(parts):
+                parts.insert(0, "翡翠")
+            count = jade_profile.get("count") or ""
+            if count:
+                parts.append(count)
+            return "".join(dict.fromkeys(parts))
+        return self._first_matching_phrase(normalized, ["祖母绿", "和田玉", "玉", "钻石", "钻", "红宝石", "红宝", "蓝宝石", "蓝宝", "珍珠", "裸石"])
+
+    def _jade_shape_phrase(self, text: str, fallback: str) -> str:
+        if "随形" in text and "蛋面" in text:
+            return "随形蛋面"
+        return fallback
 
     def _normalize_design_slot_value(self, slot: str, value: str) -> str:
         stripped = value.strip()
@@ -2535,9 +2561,9 @@ class AgentService:
         return [item for item in self._required_design_slots(stone_analysis) if not self._design_slot_is_satisfied(item, brief, stone_analysis)]
 
     def _required_design_slots(self, stone_analysis: dict[str, object] | None) -> list[str]:
-        required = ["category", "metal", "style"]
+        required = ["category", "metal", "style", "craft", "scene"]
         if stone_analysis:
-            required.extend(["craft", "scene"])
+            return required
         else:
             required.insert(1, "gemstone")
         return required
@@ -2817,7 +2843,7 @@ class AgentService:
     def _extract_jade_profile_from_text(self, text: str) -> dict[str, str]:
         normalized = text.replace("，", " ").replace("。", " ").replace("；", " ")
         waters = ["玻璃种", "高冰种", "冰种", "冰糯种", "糯种", "豆种", "油青种", "蓝水", "晴水", "紫罗兰", "黄翡", "红翡", "墨翠", "飘花", "白冰", "春带彩"]
-        colors = ["帝王绿", "阳绿", "苹果绿", "白冰", "飘花", "紫罗兰", "黄翡", "红翡", "墨翠", "蓝水", "晴水", "春带彩"]
+        colors = ["帝王绿", "满绿", "阳绿", "苹果绿", "白冰", "飘花", "紫罗兰", "黄翡", "红翡", "墨翠", "蓝水", "晴水", "春带彩", "绿色", "翠绿"]
         shapes = ["蛋面", "水滴", "平安扣", "无事牌", "叶子", "福豆", "福瓜", "葫芦", "马鞍戒面", "随形", "观音", "佛公"]
         return {
             "water": self._first_matching_phrase(normalized, waters) or "",

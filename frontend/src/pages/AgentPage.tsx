@@ -244,6 +244,43 @@ function getGenerationEvent(message: AgentMessage): {
   };
 }
 
+function isGeneratedAssetRef(asset: AgentAssetRef | null | undefined) {
+  const name = asset?.name?.trim();
+  if (!name) return false;
+  return Object.values(moduleLabels).some((label) => name.includes(label)) || /生成|结果|设计图|写实图|多视图|灰度图/.test(name);
+}
+
+function inferModuleKeyFromAsset(asset: AgentAssetRef | null | undefined): string | undefined {
+  const name = asset?.name?.trim() ?? "";
+  if (!name) return undefined;
+  const entry = Object.entries(moduleLabels).find(([, label]) => name.includes(label));
+  if (entry) return entry[0];
+  if (/多视图|四视图/.test(name)) return "multi_view";
+  if (/灰度|立体/.test(name)) return "grayscale_relief";
+  if (/设计图|裸石镶嵌/.test(name)) return "gemstone_design";
+  if (/写实图|写实/.test(name)) return "sketch_to_realistic";
+  return undefined;
+}
+
+function getWorkflowStageModuleKey(moduleKey: string | undefined, sourceAssets: AgentAssetRef[] | undefined) {
+  if (moduleKey !== "product_refine") return moduleKey;
+  const sourceModuleKey = inferModuleKeyFromAsset(getPreferredGenerationSourceAsset(moduleKey, sourceAssets));
+  return sourceModuleKey ?? moduleKey;
+}
+
+function getPreferredGenerationSourceAsset(moduleKey: string | undefined, sourceAssets: AgentAssetRef[] | undefined) {
+  const refs = sourceAssets ?? [];
+  if (!refs.length) return null;
+  if (moduleKey === "product_refine") {
+    return refs.find(isGeneratedAssetRef) ?? refs[0];
+  }
+  return refs[0];
+}
+
+function getPreferredGenerationSourceUrl(moduleKey: string | undefined, sourceAssets: AgentAssetRef[] | undefined, sourceImageUrls: string[] = []) {
+  return getAssetPreviewUrl(getPreferredGenerationSourceAsset(moduleKey, sourceAssets)) ?? sourceImageUrls[0] ?? null;
+}
+
 function getResultStepOptions(moduleKey: string | undefined): AgentFlowOption[] {
   if (moduleKey === "text_to_image" || moduleKey === "gemstone_design") return designResultStepOptions;
   if (moduleKey === "multi_view") return multiViewResultStepOptions;
@@ -269,8 +306,7 @@ function normalizeOptionCardText(value: string) {
 }
 
 function getRefineAttachments(context: ResultOptionContext): AgentAssetRef[] {
-  const refs = [...(context.sourceAssets ?? [])];
-  if (context.resultAsset) refs.push(context.resultAsset);
+  const refs = context.resultAsset ? [context.resultAsset, ...(context.sourceAssets ?? [])] : [...(context.sourceAssets ?? [])];
   const seen = new Set<string>();
   return refs.filter((item) => {
     const key = item.asset_id ?? item.storage_url ?? item.preview_url ?? item.name;
@@ -485,7 +521,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
         !inFlightActionIdsRef.current.has(action.id),
     );
     if (!pendingAction?.result_job_id) return;
-    const sourceUrl = getAssetPreviewUrl(pendingAction.source_assets[0]) ?? pendingAction.source_image_urls[0] ?? null;
+    const sourceUrl = getPreferredGenerationSourceUrl(pendingAction.module_key, pendingAction.source_assets, pendingAction.source_image_urls);
     setProgressState("running");
     setJobProgress({ percent: 18, label: `${moduleLabels[pendingAction.module_key] ?? pendingAction.title}任务恢复中...` });
     setActiveGeneration({
@@ -780,7 +816,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     inFlightActionIdsRef.current.add(action.id);
     setPendingDesignOptions([]);
     setDesignOtherText("");
-    const sourceUrl = getAssetPreviewUrl(action.source_assets[0]) ?? action.source_image_urls[0] ?? null;
+    const sourceUrl = getPreferredGenerationSourceUrl(action.module_key, action.source_assets, action.source_image_urls);
     setProgressState("running");
     setJobProgress({ percent: 18, label: `${moduleLabels[action.module_key] ?? action.title}任务排队中...` });
     setActiveGeneration({
@@ -1100,8 +1136,10 @@ export function AgentPage({ assetItems }: AgentPageProps) {
         preview_url: uploaded.preview_url,
       };
       const promptText = localRefinePrompt.trim();
+      const cleanSourceRef = pendingLocalRefineContext?.resultAsset ?? latestGeneratedAsset;
+      const attachments = cleanSourceRef ? [cleanSourceRef, markupRef] : [markupRef];
       clearLocalRefineState();
-      await handleSend(`Agent精修：${promptText || "删除选中内容"}`, [markupRef]);
+      await handleSend(`Agent精修：${promptText || "删除选中内容"}`, attachments);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "局部修改提交失败");
     }
@@ -1135,6 +1173,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     activeGeneration?.conversationId === activeConversationId && !activeGenerationAlreadyPersisted ? activeGeneration : null;
   const visibleGenerationFailed = Boolean(visibleActiveGeneration?.errorMessage) || progressState === "error";
   const visibleActiveGenerationModuleKey = visibleActiveGeneration?.moduleKey;
+  const visibleWorkflowStageModuleKey = getWorkflowStageModuleKey(visibleActiveGenerationModuleKey, visibleActiveGeneration?.sourceAssets);
   const shouldShowInlineOptions = activeOptions.length > 0 && !visibleActiveGeneration;
   const latestAssistantPlainMessage = [...messages]
     .reverse()
@@ -1201,9 +1240,10 @@ export function AgentPage({ assetItems }: AgentPageProps) {
               const generationEvent = getGenerationEvent(message);
               const resultAsset = generationEvent?.result_asset ?? message.attachments?.[0] ?? null;
               const resultUrl = generationEvent ? getAssetPreviewUrl(resultAsset) : null;
-              const sourceUrl = generationEvent ? getAssetPreviewUrl(generationEvent.source_assets?.[0]) : null;
+              const sourceUrl = generationEvent ? getPreferredGenerationSourceUrl(generationEvent.module_key, generationEvent.source_assets) : null;
               const isLatestResult = Boolean(resultUrl && latestGeneratedAsset && resultUrl === getAssetPreviewUrl(latestGeneratedAsset));
               const generationModuleKey = generationEvent?.module_key;
+              const workflowStageModuleKey = getWorkflowStageModuleKey(generationModuleKey, generationEvent?.source_assets);
               const showResultOptions = isLatestResult && !visibleActiveGeneration && !loading && !consumedResultMessageIds.has(message.id);
               const isStreamingAssistant = message.role === "assistant" && message.id === streamingAssistantId;
               return (
@@ -1263,7 +1303,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                 {generationEvent && resultUrl && showResultOptions ? (
                   <article className="agent-message assistant agent-options-message">
                     <div className="agent-result-step-grid">
-                      {getResultStepOptions(generationModuleKey).map((option) => (
+                      {getResultStepOptions(workflowStageModuleKey).map((option) => (
                         <button
                           className="agent-option-card"
                           type="button"
@@ -1273,7 +1313,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                             handleResultOption(option, {
                               messageId: message.id,
                               resultAsset,
-                              moduleKey: generationModuleKey,
+                              moduleKey: workflowStageModuleKey,
                               sourceAssets: generationEvent.source_assets,
                             })
                           }
@@ -1553,7 +1593,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                           behavior: "end" as const,
                         },
                       ]
-                    : getResultStepOptions(visibleActiveGenerationModuleKey))
+                    : getResultStepOptions(visibleWorkflowStageModuleKey))
                     .map((option) => (
                       <button
                         className="agent-option-card"
@@ -1563,7 +1603,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                         onClick={() =>
                           handleResultOption(option, {
                             resultAsset: visibleActiveGeneration.resultAsset,
-                            moduleKey: visibleActiveGeneration.moduleKey,
+                            moduleKey: visibleWorkflowStageModuleKey,
                             sourceAssets: visibleActiveGeneration.sourceAssets.length
                               ? visibleActiveGeneration.sourceAssets
                               : visibleActiveGeneration.sourceUrl

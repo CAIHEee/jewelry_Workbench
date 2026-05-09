@@ -55,7 +55,7 @@ def test_agent_conversation_stream_creates_draft_action(auth_client: TestClient,
 
     response = agent_client.post(
         f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
-        json={"content": "设计一枚祖母绿吊坠，18K金，复古风格，生成首版设计图", "attachments": []},
+        json={"content": "设计一枚祖母绿吊坠，18K金，复古风格，爪镶，晚宴佩戴，生成首版设计图", "attachments": []},
     )
 
     assert response.status_code == 200
@@ -567,6 +567,56 @@ def test_text_only_design_treats_placeholder_slots_as_missing(auth_client: TestC
     assert state["pending_design_options"]
 
 
+def test_text_only_design_requires_craft_and_scene_before_ready(auth_client: TestClient, monkeypatch) -> None:
+    async def fake_design_llm(self, **kwargs):  # noqa: ANN001
+        return {
+            "design_brief": {
+                "category": "胸针",
+                "gemstone": "随形满绿翡翠蛋面",
+                "metal": "18K黄金",
+                "style": "新中式雅致风",
+                "craft": "待补充",
+                "scene": "待补充",
+            },
+            "missing_slots": [],
+            "pending_design_slot": "",
+            "should_generate": False,
+            "latest_design_mode": "text_to_image",
+            "reply": "信息已经足够生成首版设计图。",
+            "options": [],
+        }
+
+    monkeypatch.setattr(AgentService, "_call_design_brief_llm", fake_design_llm)
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "design"})
+    conversation_id = created.json()["id"]
+
+    response = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={"content": "新中式雅致风", "attachments": []},
+    )
+
+    assert response.status_code == 200
+    assert "event: action_card" not in response.text
+    detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
+    state = detail["conversation"]["state"]
+    assert state["pending_design_slot"] == "craft"
+    assert state["pending_design_option_source"] == "fallback"
+    assert state["pending_design_options"]
+
+
+def test_design_freeform_other_input_extracts_jade_color_and_shape() -> None:
+    service = AgentService()
+    brief = {"category": "胸针"}
+
+    service._merge_design_content_into_brief(brief, "随形满绿蛋面", pending_slot="gemstone")
+
+    assert brief["gemstone"] == "翡翠满绿随形蛋面单颗主石"
+    summary = service._format_design_brief_for_review(brief, None)
+    assert "- 翡翠颜色：满绿" in summary
+    assert "- 翡翠形制：蛋面" in summary
+
+
 def test_jade_gemstone_options_prefer_section_six_knowledge_for_necklace() -> None:
     service = AgentService()
 
@@ -777,8 +827,8 @@ def test_design_completed_slot_is_not_reasked_by_llm(auth_client: TestClient, mo
     state = detail["conversation"]["state"]
     assert state["design_brief"]["metal"] == "24K足金"
     assert state["design_brief"]["style"] == "现代极简"
-    assert state["pending_design_slot"] is None
-    assert state["pending_design_options"][0]["value"] == "生成首版设计图"
+    assert state["pending_design_slot"] == "craft"
+    assert state["pending_design_options"]
 
 
 def test_merge_design_content_updates_style_slot_from_revision_text() -> None:
@@ -1080,6 +1130,8 @@ def test_design_regenerate_uses_alternate_text_to_image_model(auth_client: TestC
                 "gemstone": "冰种阳绿翡翠蛋面",
                 "metal": "18K黄金",
                 "style": "现代简约",
+                "craft": "微镶小钻",
+                "scene": "晚宴聚会",
             },
             "missing_slots": [],
             "pending_design_slot": "",
@@ -1154,6 +1206,7 @@ def test_design_does_not_auto_generate_after_last_slot_answer(auth_client: TestC
                 "gemstone": "冰种翡翠蛋面",
                 "metal": "18K黄金",
                 "style": "现代简约",
+                "craft": "微镶小钻",
                 "scene": "晚宴聚会",
             },
             "missing_slots": [],
@@ -1177,7 +1230,7 @@ def test_design_does_not_auto_generate_after_last_slot_answer(auth_client: TestC
     assert response.status_code == 200
     assert "event: action_card" not in response.text
     assert "event: design_options" in response.text
-    assert "继续补充设计要求" in response.text
+    assert "生成首版设计图" in response.text
     detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
     assert detail["actions"] == []
     assert detail["conversation"]["state"]["pending_design_option_source"] == "ready"
@@ -1249,6 +1302,7 @@ def test_design_llm_cannot_repeat_gemstone_slot_after_gemstone_is_filled(auth_cl
                 "gemstone": "冰种阳绿翡翠蛋面",
                 "metal": "18K黄金",
                 "style": "现代简约",
+                "craft": "微镶小钻",
                 "scene": "收藏送礼",
             },
             "missing_slots": [],
