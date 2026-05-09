@@ -2273,7 +2273,7 @@ class AgentService:
         )
 
     def _design_brief_has_generation_context(self, brief: dict[str, Any], stone_analysis: dict[str, object] | None) -> bool:
-        return all(str(brief.get(item) or "").strip() for item in self._required_design_slots(stone_analysis))
+        return all(self._design_slot_is_satisfied(item, brief, stone_analysis) for item in self._required_design_slots(stone_analysis))
 
     def _default_design_text_to_image_model(self, content: str) -> str:
         if "重新生成设计图" in content or content.strip().replace(" ", "") == "重新生成":
@@ -2532,7 +2532,7 @@ class AgentService:
         self._apply_knowledge_cards_to_brief(brief, cards[:3])
 
     def _missing_design_slots(self, brief: dict[str, Any], stone_analysis: dict[str, object] | None) -> list[str]:
-        return [item for item in self._required_design_slots(stone_analysis) if not str(brief.get(item) or "").strip()]
+        return [item for item in self._required_design_slots(stone_analysis) if not self._design_slot_is_satisfied(item, brief, stone_analysis)]
 
     def _required_design_slots(self, stone_analysis: dict[str, object] | None) -> list[str]:
         required = ["category", "metal", "style"]
@@ -2543,11 +2543,14 @@ class AgentService:
         return required
 
     def _design_slot_is_satisfied(self, slot: str, brief: dict[str, Any], stone_analysis: dict[str, object] | None) -> bool:
+        raw_value = brief.get(slot)
+        if self._is_placeholder_design_value(raw_value):
+            return False
         if slot == "gemstone":
             if stone_analysis:
                 return True
             gemstone_value = str(brief.get("gemstone") or "").strip()
-            if not gemstone_value:
+            if not gemstone_value or self._is_placeholder_design_value(gemstone_value):
                 return False
             jade_profile = self._extract_jade_brief_profile(brief)
             return bool(
@@ -2560,7 +2563,27 @@ class AgentService:
                     or len(gemstone_value) >= 2
                 )
             )
-        return bool(str(brief.get(slot) or "").strip())
+        return bool(str(raw_value or "").strip())
+
+    def _is_placeholder_design_value(self, value: object) -> bool:
+        if value in (None, "", [], {}):
+            return True
+        if not isinstance(value, str):
+            return False
+        normalized = value.strip().lower().replace(" ", "")
+        return normalized in {
+            "待补充",
+            "待确认",
+            "待确定",
+            "待细化",
+            "未补充",
+            "未确定",
+            "暂无",
+            "无",
+            "none",
+            "null",
+            "n/a",
+        }
 
     def _next_design_question(self, missing: list[str], stone_analysis: dict[str, object] | None) -> str:
         labels = {

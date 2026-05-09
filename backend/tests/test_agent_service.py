@@ -527,6 +527,46 @@ def test_text_only_design_requires_gemstone_slot_before_generate(auth_client: Te
     assert state["pending_design_options"]
 
 
+def test_text_only_design_treats_placeholder_slots_as_missing(auth_client: TestClient, monkeypatch) -> None:
+    async def fake_design_llm(self, **kwargs):  # noqa: ANN001
+        return {
+            "design_brief": {
+                "category": "胸针",
+                "gemstone": "待补充",
+                "metal": "18K黄金",
+                "craft": "待补充",
+                "style": "新中式抽象",
+                "scene": "待补充",
+                "concept": "植物类主题与随形满绿蛋面",
+                "supplement": "待补充",
+            },
+            "missing_slots": [],
+            "pending_design_slot": "",
+            "should_generate": False,
+            "latest_design_mode": "text_to_image",
+            "reply": "信息已经足够生成首版设计图。",
+            "options": [],
+        }
+
+    monkeypatch.setattr(AgentService, "_call_design_brief_llm", fake_design_llm)
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "design"})
+    conversation_id = created.json()["id"]
+
+    response = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={"content": "新中式抽象", "attachments": []},
+    )
+
+    assert response.status_code == 200
+    assert "event: action_card" not in response.text
+    detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
+    state = detail["conversation"]["state"]
+    assert state["pending_design_slot"] == "gemstone"
+    assert state["pending_design_option_source"] == "fallback"
+    assert state["pending_design_options"]
+
+
 def test_jade_gemstone_options_prefer_section_six_knowledge_for_necklace() -> None:
     service = AgentService()
 
