@@ -512,6 +512,7 @@ class AIService:
 
         # 确定用户输入的原图
         input_file = files[0] if files else file
+        primary_source_url = source_image_urls[0] if source_image_urls else source_image_url
         if input_file is None and source_image_urls:
             input_file = await self._build_upload_file_from_url(
                 source_image_urls[0],
@@ -527,6 +528,7 @@ class AIService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="需要上传一张原图作为多视图生成的主体",
             )
+        metadata = self._with_primary_multi_view_source(metadata, primary_source_url)
 
         # 加载固定的 10 张 train 参考图
         train_dir = Path(__file__).resolve().parents[3] / "multi_picture" / "train"
@@ -573,21 +575,16 @@ class AIService:
         prompt_parts.append(
             "\n【输入图片说明】\n"
             "我将提供 11 张图片给你：\n"
-            "- 图1 ~ 图10：这些是珠宝摄影的风格参考图，展示了专业的拍摄手法。"
-            "请学习这些图片中的：\n"
-            "  • 摄影光线：柔和的漫射光，避免过曝高光\n"
-            "  • 金属质感：黄金/白金的光泽表现方式\n"
-            "  • 宝石镶嵌：钻石、翡翠等宝石的呈现方式\n"
-            "  • 背景处理：纯白色或珠宝垫背景\n"
-            "  • 画面洁净度：专业的后期处理水准\n"
-            "  • 8K 高分辨率的细节表现\n"
-            "- 图11：这是需要生成多视图的原图主体，是你需要处理的珠宝产品。"
+            "- 图1 ~ 图10：few-shot 输出示例图，只用于学习“单件珠宝如何被展开成四视图”的生成规范、2x2 版式、视角组织、背面推断方式和干净白底产品图呈现。"
+            "它们不是本次要生成的主体，也不是款式/材质/颜色/宝石参考。\n"
+            "- 严禁复制或借用图1 ~ 图10 中的珠宝外形、材质、颜色、宝石、挂钩、链条、纹样、镶口或任何装饰结构。\n"
+            "- 图11：用户上传的唯一主体原图。最终结果必须以图11 的珠宝为唯一对象，图11 的主体身份、轮廓、比例、材质、宝石颜色和关键结构优先级最高。"
         )
         
         # === 第三部分：具体任务指令（明确输出要求）===
         prompt_parts.append(
             "\n【任务要求】\n"
-            "请基于图11 的珠宝主体，生成标准的四视图产品图：\n"
+            "请基于图11 的珠宝主体，参考图1～10的四视图输出方式，合理生成标准的四视图产品图：\n"
             "1. 视角要求：\n"
             "   • 正面视图（Front View）：与图11 的视角保持一致\n"
             "   • 左侧视图（Left Side View）：从左侧 90 度观察\n"
@@ -600,7 +597,8 @@ class AIService:
             "3. 一致性要求：\n"
             "   • 四个视图必须来自同一个三维模型，保持几何一致性\n"
             "   • 保持图11 的主体身份、结构和比例\n"
-            "   • 吸收图1~图10 的风格、材质和工艺细节\n"
+            "   • 不得把图1~图10 的任何珠宝款式、材质或颜色迁移到图11 主体上\n"
+            "   • 只允许参考图1~图10 的多视角图的设计方式、视角表达和白底呈现方式\n"
             "4. 禁止事项：\n"
             "   • 不得添加任何装饰、扭曲透视或虚构结构\n"
             "   • 无底座、无支架、无脚架、无支撑结构、无基座\n"
@@ -697,12 +695,11 @@ class AIService:
         source_image_urls: list[str] | None = None,
         stage_callback: Callable[[str], None] | None = None,
     ) -> GenerationResult:
-        """使用 gpt-image-2-all-apiyi 模型生成多视图，加入 5 张固定 train 参考图"""
+        """使用 gpt-image-2-all-apiyi 模型生成多视图：5 张 few-shot 参考图 + 1 张用户原图。"""
         context_token = _request_user.set(current_user)
         stage_token = _job_stage_callback.set(stage_callback)
         model = self._get_model_or_404(metadata.model)
 
-        # 加载固定的 5 张 train 参考图
         train_dir = Path(__file__).resolve().parents[3] / "multi_picture" / "train"
         train_files = sorted(train_dir.glob("*"), key=lambda p: self._sort_key_for_train_files(p))
         if len(train_files) < 5:
@@ -713,6 +710,7 @@ class AIService:
 
         # 确定用户输入的原图
         input_file = files[0] if files else file
+        primary_source_url = source_image_urls[0] if source_image_urls else source_image_url
         if input_file is None and source_image_urls:
             input_file = await self._build_upload_file_from_url(
                 source_image_urls[0],
@@ -728,8 +726,8 @@ class AIService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="需要上传一张原图作为多视图生成的主体",
             )
+        metadata = self._with_primary_multi_view_source(metadata, primary_source_url)
 
-        # 合并 5 张参考图和 1 张用户原图
         combined_files: list[UploadFile] = []
         for train_path in train_files[:5]:
             content = await asyncio.to_thread(train_path.read_bytes)
@@ -746,8 +744,7 @@ class AIService:
             )
         combined_files.append(input_file)
 
-        # 更新 metadata 的 image_count 为 6
-        updated_metadata = metadata.model_copy(update={"image_count": 6})
+        updated_metadata = metadata.model_copy(update={"image_count": len(combined_files)})
 
         try:
             return await self._transform_with_apiyi_gpt_image2_all(
@@ -1431,9 +1428,10 @@ class AIService:
         metadata: ReferenceImageRequestMetadata,
         model: TTAPIModelConfig,
     ) -> GenerationResult:
-        # 构建实际发送给 API 的完整提示词
-        full_prompt = self._build_apiyi_reference_prompt(metadata)
-        data = await self._post_apiyi_gpt_image2_chat(model=model, prompt=full_prompt, files=files)
+        system_prompt = self._build_apiyi_reference_system_prompt(metadata)
+        user_prompt = self._build_apiyi_reference_prompt(metadata)
+        full_prompt = f"{system_prompt}\n\n{user_prompt}" if system_prompt else user_prompt
+        data = await self._post_apiyi_gpt_image2_chat(model=model, prompt=user_prompt, files=files, system_prompt=system_prompt)
         upstream_image_url = self._extract_chat_completion_image_url(data)
         stored_asset = await self._store_generated_asset(
             image_url=upstream_image_url,
@@ -1459,7 +1457,7 @@ class AIService:
                 model_id=model.id,
                 provider=model.provider.value,
                 status=result.status,
-                prompt=metadata.prompt,
+                prompt=full_prompt,
                 job_id=result.job_id,
                 image_url=result.image_url,
                 storage_url=stored_asset["storage_url"],
@@ -2315,6 +2313,7 @@ class AIService:
         model: TTAPIModelConfig,
         prompt: str,
         files: list[UploadFile],
+        system_prompt: str | None = None,
     ) -> dict[str, Any]:
         content: str | list[dict[str, Any]]
         if files:
@@ -2322,7 +2321,7 @@ class AIService:
             for index, file in enumerate(files):
                 filename = file.filename or f"reference-{index + 1}.png"
                 if len(files) > 1:
-                    role_text = "待生成多视图的原图" if index == len(files) - 1 else f"风格参考图 {index + 1}"
+                    role_text = "用户上传的唯一主体原图" if index == len(files) - 1 else f"few-shot 输出示例图 {index + 1}"
                     content_parts.append({"type": "text", "text": f"{role_text}：{filename}"})
                 content_parts.append(
                     {
@@ -2334,18 +2333,18 @@ class AIService:
         else:
             content = prompt
 
+        messages: list[dict[str, object]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": content})
+
         return await self._post_json_with_bearer(
             base_url=self.settings.apiyi_openai_base_url,
             path="/chat/completions",
             api_key=self._require_apiyi_api_key(),
             payload={
                 "model": model.upstream_model_id,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": content,
-                    }
-                ],
+                "messages": messages,
             },
             timeout=self.settings.apiyi_timeout_seconds,
         )
@@ -2354,7 +2353,7 @@ class AIService:
         prompt = self._normalize_multi_view_user_prompt(metadata.prompt) if metadata.feature == "multi_view" else metadata.prompt.strip()
         if metadata.feature != "multi_view":
             return prompt
-        
+
         # 针对 6 张图片（5 张参考 +1 张原图）的 Few-Shot 风格提示词
         if metadata.image_count == 6:
             prompt_parts = []
@@ -2370,21 +2369,15 @@ class AIService:
             prompt_parts.append(
                 "\n【输入图片说明】\n"
                 "我将提供 6 张图片给你：\n"
-                "- 图1 ~ 图5：这些是珠宝摄影的风格参考图，展示了专业的拍摄手法。"
-                "请学习这些图片中的：\n"
-                "  • 摄影光线：柔和的漫射光，避免过曝高光\n"
-                "  • 金属质感：黄金/白金的光泽表现方式\n"
-                "  • 宝石镶嵌：钻石、翡翠等宝石的呈现方式\n"
-                "  • 背景处理：纯白色或珠宝垫背景\n"
-                "  • 画面洁净度：专业的后期处理水准\n"
-                "  • 8K 高分辨率的细节表现\n"
-                "- 图6：这是需要生成多视图的原图主体，是你需要处理的珠宝产品。"
+                "- 图1 ~ 图5：few-shot 输出示例图，只用于学习“单件珠宝如何被展开成四视图”的输出格式、2x2 排版、视角组织、背面推断方式和白底产品图呈现。"
+                "它们不是本次要生成的主体，也不是款式/材质/颜色/宝石参考。\n"
+                "- 图6：用户上传的唯一主体原图。最终结果必须以图6 的珠宝为唯一对象，图6 的主体身份、轮廓、比例、材质、宝石颜色和关键结构优先级最高。"
             )
             
             # 第三部分：具体任务指令
             prompt_parts.append(
                 "\n【任务要求】\n"
-                "请基于图6 的珠宝主体，生成标准的四视图产品图：\n"
+                "请基于图6 的珠宝主体，参考图1～5的四视图输出方式，生成标准的四视图产品图：\n"
                 "1. 视角要求：\n"
                 "   • 正面视图（Front View）：与图6 的视角保持一致\n"
                 "   • 左侧视图（Left Side View）：从左侧 90 度观察\n"
@@ -2396,7 +2389,8 @@ class AIService:
                 "3. 一致性要求：\n"
                 "   • 四个视图必须来自同一个三维模型，保持几何一致性\n"
                 "   • 保持图6 的主体身份、结构和比例\n"
-                "   • 吸收图1~图5 的风格、材质和工艺细节\n"
+                "   • 不得把图1~图5 的任何珠宝款式、材质或颜色迁移到图6 主体上\n"
+                "   • 只允许参考图1~图5 的四视图组织方式、视角表达、背面推断方式和白底呈现方式\n"
                 "   • 合理想象图6的背面视图结构，不要过于扁平，保持整体立体感\n"
                 "4. 禁止事项：\n"
                 "   • 不得添加任何装饰、扭曲透视或虚构结构\n"
@@ -2414,14 +2408,24 @@ class AIService:
             return "\n".join(prompt_parts)
         
         # 其他情况使用原有的通用提示词
-        if metadata.image_count <= 1:
-            return prompt
         return (
             "这是一个带上下文参考图的多视图生成任务。"
-            "输入图片按顺序理解：前面的图片都是风格、材质、光线、背景和工艺细节参考；最后一张图片是必须生成四视图的原图主体。"
+            "输入图片按顺序理解：前面的图片都是 few-shot 输出示例，只用于学习四视图组织方式；最后一张图片是必须生成四视图的原图主体。"
             "请只基于最后一张原图的主体结构生成正面、左侧、右侧、背面四个视角，保持主体身份和几何一致；"
-            "同时吸收前面参考图的摄影风格、珠宝质感、金属/宝石细节、画面洁净度和光照方式。"
+            "不要复制前面示例图的款式、材质、颜色或宝石。"
             f"\n\n具体生成要求：{prompt}"
+        )
+
+    def _build_apiyi_reference_system_prompt(self, metadata: ReferenceImageRequestMetadata) -> str | None:
+        if metadata.feature != "multi_view":
+            return None
+        return (
+            "你是专业珠宝产品多视图生成助手。"
+            "用户消息会包含若干 few-shot 输出示例图，最后一张才是用户上传的唯一主体原图。"
+            "必须严格以最后一张用户原图作为唯一主体来源；前面的 few-shot 图只用于学习四视图排版、视角组织、背面推断方式和白底产品图呈现。"
+            "不要借用或复制 few-shot 图中的珠宝款式、材质、颜色、宝石、挂钩、链条、纹样、镶口或装饰结构。"
+            "如果需要推断侧面或背面，只能从最后一张主体图的现有结构、材质、宝石颜色和比例合理外推。"
+            "最终图片应是同一件珠宝的正面、左侧、右侧、背面四视图，采用 2x2 网格白底产品图。"
         )
 
     async def _post_json_with_bearer_base_url(
@@ -3071,6 +3075,25 @@ class AIService:
         if all(fragment in normalized for fragment in legacy_default_fragments):
             return ""
         return normalized
+
+    def _with_primary_multi_view_source(
+        self,
+        metadata: ReferenceImageRequestMetadata,
+        source_image_url: str | None,
+    ) -> ReferenceImageRequestMetadata:
+        if not source_image_url:
+            return metadata
+
+        filename = metadata.filename or "input-image.png"
+        return metadata.model_copy(
+            update={
+                "source_image_url": self._resolve_source_preview_url(source_image_url, filename),
+                "source_image_storage_url": source_image_url if self._is_custom_storage_url(source_image_url) else None,
+                "source_images": [
+                    self._build_source_image_reference(url=source_image_url, filename=filename),
+                ],
+            }
+        )
 
     def _build_reference_history_metadata(self, metadata: ReferenceImageRequestMetadata) -> dict[str, object]:
         payload: dict[str, object] = {
