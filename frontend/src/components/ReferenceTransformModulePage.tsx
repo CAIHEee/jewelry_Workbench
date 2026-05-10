@@ -17,6 +17,7 @@ import type { PromptTemplate } from "../types/prompts";
 import type { WorkspaceRun } from "../types/workspace";
 import { buildGenerationJobProgress } from "../utils/jobProgress";
 import type { ModuleHistoryEntry } from "../utils/history";
+import { isNotMultiViewOnlyModel } from "../utils/modelFilters";
 import type { GenerationProgressPhase } from "./GenerationProgress";
 
 interface ReferenceTransformModulePageProps {
@@ -88,7 +89,7 @@ export function ReferenceTransformModulePage({
   const initialPrompt = hidePromptEditor
     ? (defaultPrompt ?? "")
     : (defaultPrompt !== undefined ? defaultPrompt : (templates[0]?.content ?? ""));
-  const { models, error: modelError, defaultModelId } = useModelCatalog((model) => model.supports_reference_images);
+  const { models, error: modelError, defaultModelId } = useModelCatalog((model) => model.supports_reference_images && isNotMultiViewOnlyModel(model));
   const resolvedDefaultModelId = useMemo(
     () => models.find((item) => item.id === preferredModelId)?.id ?? defaultModelId,
     [defaultModelId, models, preferredModelId],

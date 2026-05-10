@@ -50,7 +50,7 @@ class TextToImageRequest(BaseModel):
     aspect_ratio: str = "1:1"
     size: str = "1024x1024"
     image_size: str = "1K"
-    thinking_level: str = "Minimal"
+    thinking_level: str = "High"
 
 
 class InputImageSource(BaseModel):

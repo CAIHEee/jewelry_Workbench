@@ -13,6 +13,7 @@ import type { AssetItem } from "../types/mockData";
 import type { WorkspaceRun } from "../types/workspace";
 import { buildGenerationJobProgress } from "../utils/jobProgress";
 import type { ModuleHistoryEntry } from "../utils/history";
+import { isNotMultiViewOnlyModel } from "../utils/modelFilters";
 
 const templates = getPromptTemplatesByModule("image-edit");
 const defaultPrompt =
@@ -32,16 +33,19 @@ const jobProgressLabels = {
   failed: "线稿转写实图失败",
 };
 const preferredImageEditModelId = "gemini-3.1-flash-image-preview";
+const generationCountOptions = [1, 2, 4] as const;
+type GenerationCount = (typeof generationCountOptions)[number];
 
 interface ImageEditPageProps {
   assetItems: AssetItem[];
   onRecordRun: (run: Omit<WorkspaceRun, "id" | "createdAt">) => void;
+  onRefreshHistory?: () => Promise<void> | void;
   pageRuns: ModuleHistoryEntry[];
   onDeleteHistory?: (historyId: string) => Promise<void> | void;
 }
 
-export function ImageEditPage({ assetItems, onRecordRun, pageRuns, onDeleteHistory }: ImageEditPageProps) {
-  const { models, error: modelError, defaultModelId } = useModelCatalog((model) => model.supports_reference_images);
+export function ImageEditPage({ assetItems, onRecordRun: _onRecordRun, onRefreshHistory, pageRuns, onDeleteHistory }: ImageEditPageProps) {
+  const { models, error: modelError, defaultModelId } = useModelCatalog((model) => model.supports_reference_images && isNotMultiViewOnlyModel(model));
   const imageEditDefaultModelId = useMemo(
     () => models.find((item) => item.id === preferredImageEditModelId)?.id ?? defaultModelId,
     [defaultModelId, models],
@@ -49,7 +53,8 @@ export function ImageEditPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
   const [model, setModel] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<AssetItem[]>([]);
-  const [result, setResult] = useState<GenerationResult | null>(null);
+  const [results, setResults] = useState<GenerationResult[]>([]);
+  const [generationCount, setGenerationCount] = useState<GenerationCount>(1);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -63,17 +68,18 @@ export function ImageEditPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
   }, [imageEditDefaultModelId, model, models]);
 
   useEffect(() => {
-    if (result || selectedHistoryId || pageRuns.length === 0) {
+    if (results.length > 0 || selectedHistoryId || pageRuns.length === 0) {
       return;
     }
     setSelectedHistoryId(pageRuns[0].id);
-  }, [pageRuns, result, selectedHistoryId]);
+  }, [pageRuns, results.length, selectedHistoryId]);
 
   const selectedModel = useMemo(() => models.find((item) => item.id === model) ?? models[0] ?? null, [model, models]);
   const uploadedPreviewUrl = useMemo(() => (files[0] ? URL.createObjectURL(files[0]) : null), [files]);
   const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
-  const activeHistory = selectedHistory ?? (!result ? pageRuns[0] ?? null : null);
-  const previewResultUrl = activeHistory?.imageUrl ?? result?.image_url ?? null;
+  const activeHistory = selectedHistory ?? (results.length === 0 ? pageRuns[0] ?? null : null);
+  const latestResult = results[0] ?? null;
+  const previewResultUrl = activeHistory?.imageUrl ?? latestResult?.image_url ?? null;
   const previewSourceUrl = useMemo(() => {
     const historySourceUrl = activeHistory?.sourceImageUrl ?? null;
     if (historySourceUrl && historySourceUrl !== previewResultUrl) {
@@ -106,6 +112,8 @@ export function ImageEditPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
     }
     setLoading(true);
     setError(null);
+    setResults([]);
+    setSelectedHistoryId(null);
     setProgressState("running");
     setJobProgress({ percent: 18, label: "写实转绘任务排队中..." });
     try {
@@ -114,6 +122,13 @@ export function ImageEditPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
       const inputFile = files[0] ?? null;
       if (!inputFile && !selectedAssetUrl) throw new Error("未获取到可用参考图");
 
+      const recordCompletedResponse = (response: GenerationResult) => {
+        if (!response.image_url) {
+          throw new Error("生成完成，但没有返回结果图片，请稍后重试。");
+        }
+        setResults((current) => [response, ...current]);
+      };
+
       const response = await submitReferenceImageTransform({
         file: inputFile,
         sourceImageUrl: inputFile ? undefined : selectedAssetUrl ?? undefined,
@@ -121,27 +136,31 @@ export function ImageEditPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
         model: selectedModel.id,
         prompt: defaultPrompt,
         feature: "sketch_to_realistic",
+        batchSize: generationCount,
       }, {
-        onJobUpdate: (job) => setJobProgress(buildGenerationJobProgress(job, jobProgressLabels)),
+        onJobUpdate: (job) => {
+          const nextProgress = buildGenerationJobProgress(job, jobProgressLabels);
+          setJobProgress({
+            ...nextProgress,
+            label: generationCount > 1 ? `${nextProgress.label}（批量 ${generationCount} 张）` : nextProgress.label,
+          });
+        },
       });
-      if (!response.image_url) {
+      const responseItems = response.results?.length ? response.results : [response];
+      const validResponses = responseItems.filter((item) => Boolean(item.image_url));
+      if (validResponses.length === 0) {
         throw new Error("生成完成，但没有返回结果图片，请稍后重试。");
       }
-
-      setResult(response);
-      setSelectedHistoryId(null);
-      onRecordRun({
-        kind: "sketch_to_realistic",
-        title: "线稿转写实图",
-        model: selectedModel.id,
-        provider: response.provider,
-        status: response.status,
-        imageUrl: response.image_url,
-        sourceImageUrl: response.source_image_url ?? uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? null,
-        prompt: defaultPrompt,
-      });
-      setJobProgress({ percent: 100, label: "已完成" });
+      validResponses.forEach((item) => recordCompletedResponse(item));
+      setJobProgress({ percent: 100, label: generationCount > 1 ? `已完成 ${validResponses.length}/${generationCount} 张` : "已完成" });
       setProgressState("success");
+      await onRefreshHistory?.();
+      window.setTimeout(() => {
+        void onRefreshHistory?.();
+      }, 800);
+      if (validResponses.length < generationCount) {
+        setError(`已完成 ${validResponses.length}/${generationCount} 张，${generationCount - validResponses.length} 张生成失败或超时。`);
+      }
     } catch (submitError) {
       setLoading(false);
       setProgressState("error");
@@ -183,6 +202,25 @@ export function ImageEditPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
               onSelectedAssetsChange={setSelectedAssets}
             />
 
+            <div className="input-group compact-input-group">
+              <span>生成数量</span>
+              <div className="count-segmented" role="radiogroup" aria-label="生成数量">
+                {generationCountOptions.map((count) => (
+                  <button
+                    className={generationCount === count ? "count-option active" : "count-option"}
+                    type="button"
+                    key={count}
+                    role="radio"
+                    aria-checked={generationCount === count}
+                    onClick={() => setGenerationCount(count)}
+                    disabled={loading}
+                  >
+                    {count}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <GenerationProgress
               state={progressState}
               phases={progressPhases}
@@ -193,7 +231,7 @@ export function ImageEditPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
             />
 
             <button className="primary-button align-start" type="button" onClick={handleSubmit} disabled={loading || !selectedModel}>
-              {loading ? "生成中..." : "生成写实图"}
+              {loading ? "生成中..." : `生成${generationCount > 1 ? ` ${generationCount} 张` : ""}写实图`}
             </button>
           </div>
 

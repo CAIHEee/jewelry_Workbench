@@ -623,6 +623,8 @@ export async function submitReferenceModuleTransform(path: string, payload: Refe
   if (payload.negativePrompt) formData.append("negative_prompt", payload.negativePrompt);
   if (typeof payload.strength === "number") formData.append("strength", String(payload.strength));
   if (payload.imageSize) formData.append("image_size", payload.imageSize);
+  if (payload.batchSize) formData.append("batch_size", String(payload.batchSize));
+  if (typeof payload.batchIndex === "number") formData.append("batch_index", String(payload.batchIndex));
 
   const jobPath = path.startsWith("/ai/") ? path.replace("/ai/", "/ai/jobs/") : path;
   const response = await apiFetch(buildApiUrl(jobPath), {
@@ -649,6 +651,7 @@ export async function submitMultiViewGeneration(payload: ReferenceImageTransform
   formData.append("prompt", payload.prompt);
   if (payload.negativePrompt) formData.append("negative_prompt", payload.negativePrompt);
   if (typeof payload.strength === "number") formData.append("strength", String(payload.strength));
+  if (payload.batchSize) formData.append("batch_size", String(payload.batchSize));
 
   const response = await apiFetch(buildApiUrl("/ai/jobs/multi-view"), {
     method: "POST",

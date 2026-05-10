@@ -563,7 +563,7 @@ export default function App() {
   function recordWorkspaceRun(run: Omit<WorkspaceRun, "id" | "createdAt">) {
     setWorkspaceRuns((current) =>
       [
-        { ...run, id: `${run.kind}-${Date.now()}`, createdAt: new Date().toISOString() },
+        { ...run, id: `${run.kind}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, createdAt: new Date().toISOString() },
         ...current,
       ].slice(0, MAX_STORED_WORKSPACE_RUNS),
     );
@@ -609,13 +609,13 @@ export default function App() {
           <TextToImagePage onRecordRun={recordWorkspaceRun} pageRuns={textToImageRuns} onDeleteHistory={handleDeleteHistory} />
         </section>
         <section className={activeView === "multi-view" ? "view-panel active" : "view-panel hidden"}>
-          <MultiViewPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} pageRuns={multiViewRuns} onDeleteHistory={handleDeleteHistory} />
+          <MultiViewPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} onRefreshHistory={refreshPersistedHistory} pageRuns={multiViewRuns} onDeleteHistory={handleDeleteHistory} />
         </section>
         <section className={activeView === "multi-view-split" ? "view-panel active" : "view-panel hidden"}>
           <MultiViewSplitPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} pageRuns={multiViewSplitRuns} onDeleteHistory={handleDeleteHistory} />
         </section>
         <section className={activeView === "image-edit" ? "view-panel active" : "view-panel hidden"}>
-          <ImageEditPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} pageRuns={imageEditRuns} onDeleteHistory={handleDeleteHistory} />
+          <ImageEditPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} onRefreshHistory={refreshPersistedHistory} pageRuns={imageEditRuns} onDeleteHistory={handleDeleteHistory} />
         </section>
         <section className={activeView === "product-refine" ? "view-panel active" : "view-panel hidden"}>
           <ProductRefinePage assetItems={assetItems} onRecordRun={recordWorkspaceRun} pageRuns={productRefineRuns} onDeleteHistory={handleDeleteHistory} />

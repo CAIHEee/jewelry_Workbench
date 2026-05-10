@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import HTTPException, UploadFile, status
+from langchain_core.prompts import PromptTemplate
 from PIL import Image
 from starlette.datastructures import Headers
 
@@ -452,11 +453,7 @@ class AIService:
         source_image_urls: list[str] | None = None,
         stage_callback: Callable[[str], None] | None = None,
     ) -> GenerationResult:
-        """使用固定 few-shot 上下文生成多视图：10 张 train 参考图 + 1 张用户原图
-        
-        使用 APIYI gpt-image-2 的 /v1/images/edits 接口（multipart/form-data）
-        支持最多 16 张参考图通过 image[] 数组传入
-        """
+        """使用 Qwen3-VL 反推提示词后，通过 APIYI images/edits 生成多视图。"""
         context_token = _request_user.set(current_user)
         stage_token = _job_stage_callback.set(stage_callback)
         model = self._get_model_or_404(metadata.model)
@@ -507,63 +504,7 @@ class AIService:
         input_mime = input_file.content_type or "image/png"
         multipart_files.append(("image", (input_file.filename or "input-image.png", input_content, input_mime)))
 
-        # 构建 prompt：采用 Few-Shot 风格的三层结构
-        # 1. 前置上下文：建立角色认知和任务框架
-        # 2. 参考图说明：让模型理解每张图的作用
-        # 3. 具体任务指令：明确的输出要求
-        user_prompt = self._normalize_multi_view_user_prompt(metadata.prompt)
-        
-        prompt_parts = []
-        
-        # === 第一部分：前置上下文（建立角色认知）===
-        prompt_parts.append(
-            "【角色定义】\n"
-            "你是一个专业的珠宝多视图生成专家，精通珠宝摄影、三维建模和工业设计。"
-            "你的任务是根据提供的参考图和原图，生成高质量的四视图产品图。"
-        )
-        
-        # === 第二部分：Few-Shot 上下文说明（建立图片认知）===
-        prompt_parts.append(
-            "\n【输入图片说明】\n"
-            "我将提供 11 张图片给你：\n"
-            "- 图1 ~ 图10：few-shot 输出示例图，只用于学习“单件珠宝如何被展开成四视图”的生成规范、2x2 版式、视角组织、背面推断方式和干净白底产品图呈现。"
-            "它们不是本次要生成的主体，也不是款式/材质/颜色/宝石参考。\n"
-            "- 严禁复制或借用图1 ~ 图10 中的珠宝外形、材质、颜色、宝石、挂钩、链条、纹样、镶口或任何装饰结构。\n"
-            "- 图11：用户上传的唯一主体原图。最终结果必须以图11 的珠宝为唯一对象，图11 的主体身份、轮廓、比例、材质、宝石颜色和关键结构优先级最高。"
-        )
-        
-        # === 第三部分：具体任务指令（明确输出要求）===
-        prompt_parts.append(
-            "\n【任务要求】\n"
-            "请基于图11 的珠宝主体，参考图1～10的四视图输出方式，合理生成标准的四视图产品图：\n"
-            "1. 视角要求：\n"
-            "   • 正面视图（Front View）：与图11 的视角保持一致\n"
-            "   • 左侧视图（Left Side View）：从左侧 90 度观察\n"
-            "   • 右侧视图（Right Side View）：从右侧 90 度观察\n"
-            "   • 背面视图（Back View）：采用正交透视法，仅展示作品本身的后部结构\n"
-            "2. 布局要求：\n"
-            "   • 以 2x2 网格排列四个视图\n"
-            "   • 每个视图之间用白色细线分隔\n"
-            "   • 整体背景为纯白色\n"
-            "3. 一致性要求：\n"
-            "   • 四个视图必须来自同一个三维模型，保持几何一致性\n"
-            "   • 保持图11 的主体身份、结构和比例\n"
-            "   • 不得把图1~图10 的任何珠宝款式、材质或颜色迁移到图11 主体上\n"
-            "   • 只允许参考图1~图10 的多视角图的设计方式、视角表达和白底呈现方式\n"
-            "4. 禁止事项：\n"
-            "   • 不得添加任何装饰、扭曲透视或虚构结构\n"
-            "   • 无底座、无支架、无脚架、无支撑结构、无基座\n"
-            "   • 禁止在背面或下方添加支撑\n"
-            "   • 不用考虑重力，专注展示珠宝本身"
-        )
-        
-        # 添加用户自定义补充要求
-        if user_prompt:
-            prompt_parts.append(
-                f"\n【补充要求】\n{user_prompt}"
-            )
-        
-        prompt = "\n".join(prompt_parts)
+        prompt = await self._build_qwen_multi_view_prompt(input_file=input_file, metadata=metadata)
 
         try:
             # 调用 APIYI /v1/images/edits 接口（multipart/form-data）
@@ -646,7 +587,7 @@ class AIService:
         source_image_urls: list[str] | None = None,
         stage_callback: Callable[[str], None] | None = None,
     ) -> GenerationResult:
-        """使用 gpt-image-2-all-apiyi 模型生成多视图：5 张 few-shot 参考图 + 1 张用户原图。"""
+        """使用 Qwen3-VL 反推提示词，再用 gpt-image-2-all-apiyi 生成多视图。"""
         context_token = _request_user.set(current_user)
         stage_token = _job_stage_callback.set(stage_callback)
         model = self._get_model_or_404(metadata.model)
@@ -678,6 +619,8 @@ class AIService:
                 detail="需要上传一张原图作为多视图生成的主体",
             )
         metadata = self._with_primary_multi_view_source(metadata, primary_source_url)
+        generated_prompt = await self._build_qwen_multi_view_prompt(input_file=input_file, metadata=metadata)
+        metadata = metadata.model_copy(update={"prompt": generated_prompt})
 
         combined_files: list[UploadFile] = []
         for train_path in train_files[:5]:
@@ -1379,10 +1322,8 @@ class AIService:
         metadata: ReferenceImageRequestMetadata,
         model: TTAPIModelConfig,
     ) -> GenerationResult:
-        system_prompt = self._build_apiyi_reference_system_prompt(metadata)
-        user_prompt = self._build_apiyi_reference_prompt(metadata)
-        full_prompt = f"{system_prompt}\n\n{user_prompt}" if system_prompt else user_prompt
-        data = await self._post_apiyi_gpt_image2_chat(model=model, prompt=user_prompt, files=files, system_prompt=system_prompt)
+        prompt = self._build_apiyi_reference_prompt(metadata)
+        data = await self._post_apiyi_gpt_image2_chat(model=model, prompt=prompt, files=files)
         upstream_image_url = self._extract_chat_completion_image_url(data)
         stored_asset = await self._store_generated_asset(
             image_url=upstream_image_url,
@@ -1396,7 +1337,7 @@ class AIService:
             provider=model.provider,
             model=model.id,
             image_url=stored_asset["access_url"],
-            revised_prompt=full_prompt,
+            revised_prompt=prompt,
             message="Reference image transform completed." if stored_asset["access_url"] else "Reference image transform returned no asset.",
             raw_response=data,
         ).model_copy(update=self._build_reference_result_update(metadata))
@@ -1408,7 +1349,7 @@ class AIService:
                 model_id=model.id,
                 provider=model.provider.value,
                 status=result.status,
-                prompt=full_prompt,
+                prompt=prompt,
                 job_id=result.job_id,
                 image_url=result.image_url,
                 storage_url=stored_asset["storage_url"],
@@ -1500,6 +1441,9 @@ class AIService:
                     "imageConfig": {
                         "aspectRatio": request.aspect_ratio,
                         "imageSize": request.image_size,
+                    },
+                    "thinkingConfig": {
+                        "thinkingLevel": self._gemini_thinking_level(request.thinking_level),
                     },
                 },
             },
@@ -1731,7 +1675,7 @@ class AIService:
             "prompt": self._build_fusion_prompt(metadata),
             "aspect_ratio": "1:1",
             "image_size": "1K",
-            "thinking_level": "Minimal",
+            "thinking_level": "High",
             "refer_images": refer_images,
         }
         data = await self._post_json(
@@ -1806,6 +1750,9 @@ class AIService:
                         "aspectRatio": "1:1",
                         "imageSize": "1K",
                     },
+                    "thinkingConfig": {
+                        "thinkingLevel": self._gemini_thinking_level(),
+                    },
                 },
             },
             timeout=self.settings.apiyi_timeout_seconds,
@@ -1861,7 +1808,7 @@ class AIService:
             "prompt": metadata.prompt,
             "aspect_ratio": "1:1",
             "image_size": metadata.image_size,
-            "thinking_level": "Minimal",
+            "thinking_level": "High",
             "refer_images": refer_images,
         }
         data = await self._post_json(
@@ -1935,6 +1882,9 @@ class AIService:
                     "imageConfig": {
                         "aspectRatio": "1:1",
                         "imageSize": metadata.image_size,
+                    },
+                    "thinkingConfig": {
+                        "thinkingLevel": self._gemini_thinking_level(),
                     },
                 },
             },
@@ -2270,10 +2220,6 @@ class AIService:
         if files:
             content_parts: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
             for index, file in enumerate(files):
-                filename = file.filename or f"reference-{index + 1}.png"
-                if len(files) > 1:
-                    role_text = "用户上传的唯一主体原图" if index == len(files) - 1 else f"few-shot 输出示例图 {index + 1}"
-                    content_parts.append({"type": "text", "text": f"{role_text}：{filename}"})
                 content_parts.append(
                     {
                         "type": "image_url",
@@ -2300,84 +2246,181 @@ class AIService:
             timeout=self.settings.apiyi_timeout_seconds,
         )
 
-    def _build_apiyi_reference_prompt(self, metadata: ReferenceImageRequestMetadata) -> str:
-        prompt = self._normalize_multi_view_user_prompt(metadata.prompt) if metadata.feature == "multi_view" else metadata.prompt.strip()
-        if metadata.feature != "multi_view":
-            return prompt
+    async def _build_qwen_multi_view_prompt(
+        self,
+        *,
+        input_file: UploadFile,
+        metadata: ReferenceImageRequestMetadata,
+    ) -> str:
+        api_key = self._require_dashscope_api_key()
+        if not api_key:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="DASHSCOPE_API_KEY or AGENT_LLM_API_KEY is required for multi-view prompt generation.",
+            )
 
-        # 针对 6 张图片（5 张参考 +1 张原图）的 Few-Shot 风格提示词
-        if metadata.image_count == 6:
-            prompt_parts = []
-            
-            # 第一部分：角色定义
-            prompt_parts.append(
-                "【角色定义】\n"
-                "你是一个专业的珠宝多视图生成专家，精通珠宝摄影、三维建模和工业设计。"
-                "你的任务是根据提供的参考图和原图，生成高质量的四视图产品图。"
-            )
-            
-            # 第二部分：Few-Shot 上下文说明
-            prompt_parts.append(
-                "\n【输入图片说明】\n"
-                "我将提供 6 张图片给你：\n"
-                "- 图1 ~ 图5：输出示例图，这几张图已经明确标明为参考图，只用于学习“单件珠宝如何被展开成四视图”的金属镶嵌方式，背面推断方式。"
-                "它们不是本次要生成的主体，也不是款式/材质/颜色/宝石参考。\n"
-                "- 图6：用户上传的唯一主体原图。最终结果必须以图6 的珠宝为唯一对象，图6 的主体身份、轮廓、比例、材质、宝石颜色和关键结构优先级最高。"
-            )
-            
-            # 第三部分：具体任务指令
-            prompt_parts.append(
-                "\n【任务要求】\n"
-                "请基于图6（用户上传的图片）的珠宝主体，参考图1～5的四视图输出方式，生成标准的四视图产品图：\n"
-                "1. 视角要求：\n"
-                "   • 正面视图（Front View）：与图6 的视角保持一致\n"
-                "   • 左侧视图（Left Side View）：从左侧 90 度观察\n"
-                "   • 右侧视图（Right Side View）：从右侧 90 度观察\n"
-                "   • 背面视图（Back View）：采用正交透视法，仅展示作品本身的后部结构\n"
-                "2. 布局要求：\n"
-                "   • 以 2x2 网格排列四个视图\n"
-                "   • 整体背景为白色\n"
-                "3. 一致性要求：\n"
-                "   • 四个视图必须来自同一个三维模型，保持几何一致性\n"
-                "   • 保持图6 的主体身份、结构和比例\n"
-                "   • 不得把图1~图5 的任何珠宝款式、材质或颜色迁移到图6 主体上\n"
-                "   • 只允许参考图1~图5 的四视图组织方式、视角表达、背面推断方式和白底呈现方式\n"
-                "   • 合理想象图6的背面视图结构，不要过于扁平，保持整体立体感\n"
-                # "4. 禁止事项：\n"
-                # "   • 不得添加任何装饰、扭曲透视或虚构结构\n"
-                # "   • 无底座、无支架、无脚架、无支撑结构、无基座\n"
-                # "   • 禁止在背面或下方添加支撑\n"
-                # "   • 不用考虑重力，专注展示珠宝本身"
-            )
-            
-            # 添加用户自定义补充要求
-            if prompt:
-                prompt_parts.append(
-                    f"\n【补充要求】\n{prompt}"
-                )
-            
-            return "\n".join(prompt_parts)
-        
-        # 其他情况使用原有的通用提示词
-        return (
-            "这是一个带上下文参考图的多视图生成任务。"
-            "输入图片按顺序理解：前面的图片都是 few-shot 输出示例，只用于学习四视图组织方式；最后一张图片是必须生成四视图的原图主体。"
-            "请只基于最后一张原图的主体结构生成正面、左侧、右侧、背面四个视角，保持主体身份和几何一致；"
-            "不要复制前面示例图的款式、材质、颜色或宝石。"
-            f"\n\n具体生成要求：{prompt}"
+        data_url = await self._file_to_data_url(input_file)
+        prompt = self._build_qwen_multi_view_prompt_request_text(metadata.prompt)
+        data = await self._post_dashscope_qwen_chat(
+            api_key=api_key,
+            payload={
+                "model": self.settings.multi_view_prompt_model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": data_url}},
+                            {"type": "text", "text": prompt},
+                        ],
+                    },
+                ],
+                "stream": True,
+                "enable_thinking": True,
+                "thinking_budget": self.settings.multi_view_prompt_thinking_budget,
+            },
         )
+        generated_prompt = self._extract_chat_completion_content(data)
+        if not generated_prompt:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={"message": "Qwen prompt generation returned no content.", "upstream_response": data},
+            )
+        return self._normalize_single_line_prompt(generated_prompt)
+
+    def _build_qwen_multi_view_prompt_request_text(self, user_prompt: str | None) -> str:
+        normalized_user_prompt = self._normalize_multi_view_user_prompt(user_prompt)
+        one_shot_prompt = self._render_multi_view_one_shot_template(
+            {
+                "jewelry_type": "胸针",
+                "design_style": "高级珠宝设计",
+                "shape_description": "自然枝蔓延展",
+                "gem_color_1": "祖母绿绿色",
+                "gem_color_2": "紫色",
+                "gem_color_3": "橙色",
+                "metal_color": "18K黄金色",
+                "overall_structure": "左右对称的枝蔓式",
+                "central_feature": "椭圆形主石",
+                "branch_count": "三个",
+                "render_style": "高端珠宝产品渲染",
+            }
+        )
+        user_prompt_section = normalized_user_prompt or "无"
+        request_template = PromptTemplate.from_template(
+            (
+                "任务：请反推当前珠宝图片的生成提示词，并集成给出一份新的生图提示词。"
+                "目标模型：gpt image 2。"
+                "输出要求：参考 gpt image 2 的提示词编写规范，只输出中文纯文本，不要 Markdown，不要换行符，不要额外解释。"
+                "新提示词必须要求生成该珠宝的四个角度视角：正视图、左侧视90度、右侧视90度、背视图。"
+                "四视角必须明确写为：正视（需与原图一致）、左侧视（90度）、右侧视（90度）、背视。"
+                "正视图必须与原图完全一致；左侧视和右侧视必须清楚表达90度侧面结构；背视必须合理展示背面结构和镶嵌细节。"
+                "请先观察当前图片，反推珠宝类型、设计风格、造型、宝石颜色、金属颜色、整体结构、中心特征、分支数量和渲染风格，再把这些信息写入最终提示词。"
+                "下面是一份 one-shot 结构示例，只学习结构和描述粒度，不要照抄示例中的珠宝类型、颜色、材质、结构或数字："
+                "{one_shot_prompt}"
+                " 用户补充提示词：{user_prompt}。"
+                "现在请基于当前图片和用户补充提示词，直接输出最终生图提示词。"
+            )
+        )
+        return request_template.format(one_shot_prompt=one_shot_prompt, user_prompt=user_prompt_section)
+
+    def _render_multi_view_one_shot_template(self, values: dict[str, str]) -> str:
+        template = PromptTemplate.from_template(
+            (
+            "一枚高端珠宝设计图，展示一件{{jewelry_type}}。设计风格为{{design_style}}，采用{{shape_description}}造型。"
+            "珠宝由多个不规则形状的宝石组成，包括{{gem_color_1}}、{{gem_color_2}}、{{gem_color_3}}等颜色，镶嵌在{{metal_color}}的金属框架中。"
+            "整体呈{{overall_structure}}结构，中间有一个较大的{{central_feature}}，两侧各延伸出{{branch_count}}个分支。"
+            "背景为纯白色，突出珠宝设计。图片需包含四个视角的展示："
+            "1. 正视图：正面垂直视角，需与原图完全一致。清晰展示{{overall_structure}}结构，中间的{{central_feature}}以及两侧的分支。"
+            "每个分支上的不规则宝石（{{gem_color_1}}、{{gem_color_2}}、{{gem_color_3}}）位置和形状需与原图完全相同。{{metal_color}}金属框架的线条和厚度需保持一致。"
+            "2. 左侧视：从左侧90度角拍摄，展示珠宝的立体感和深度。清晰呈现{{overall_structure}}结构的侧面轮廓，各分支宝石的厚度和金属框架的侧面线条。背景为纯白色，光线均匀，突出珠宝的立体结构。"
+            "3. 右侧视：从右侧90度角拍摄，展示珠宝的另一侧立体感。与左侧视形成对称视角，清晰呈现{{overall_structure}}结构的侧面轮廓，各分支宝石的厚度和金属框架的侧面线条。背景为纯白色，光线均匀。"
+            "4. 背视：背面视角，展示珠宝的背面结构。清晰呈现{{overall_structure}}结构的背面金属框架，各分支宝石的背面镶嵌方式，以及金属框架的{{central_feature}}。背景为纯白色，光线均匀，突出背面设计细节。"
+            "整体风格：{{render_style}}，线条清晰，色彩鲜艳，构图简洁，背景纯白，突出珠宝设计的立体感和结构细节，细节清晰。"
+            ),
+            template_format="mustache",
+        )
+        return template.format(**values)
+
+    def _require_dashscope_api_key(self) -> str | None:
+        dashscope_api_key = getattr(self.settings, "dashscope_api_key", None)
+        agent_llm_api_key = getattr(self.settings, "agent_llm_api_key", None)
+        return (dashscope_api_key or agent_llm_api_key or "").strip() or None
+
+    async def _post_dashscope_qwen_chat(self, *, api_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+        base_url = self.settings.agent_llm_base_url.rstrip("/")
+        path = "/chat/completions" if base_url.endswith("/v1") else "/v1/chat/completions"
+        async with httpx.AsyncClient(timeout=self.settings.agent_llm_timeout_seconds) as client:
+            async with client.stream(
+                "POST",
+                f"{base_url}{path}",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            ) as response:
+                if response.status_code >= 400:
+                    response_text = await response.aread()
+                    try:
+                        error_data = json.loads(response_text.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        error_data = {"message": response_text.decode("utf-8", errors="replace")}
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail={"upstream_status": response.status_code, "upstream_response": error_data},
+                    )
+                answer_parts: list[str] = []
+                usage: dict[str, Any] | None = None
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    raw_data = line.removeprefix("data:").strip()
+                    if raw_data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(raw_data)
+                    except json.JSONDecodeError:
+                        continue
+                    if not chunk.get("choices"):
+                        if isinstance(chunk.get("usage"), dict):
+                            usage = chunk["usage"]
+                        continue
+                    text = self._extract_stream_delta_text(chunk)
+                    if text:
+                        answer_parts.append(text)
+        message: dict[str, Any] = {"content": "".join(answer_parts)}
+        data: dict[str, Any] = {"choices": [{"message": message}]}
+        if usage:
+            data["usage"] = usage
+        return data
+
+    def _extract_stream_delta_text(self, body: dict[str, Any]) -> str:
+        choice = (body.get("choices") or [{}])[0]
+        delta = choice.get("delta") or {}
+        content = delta.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            fragments: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    fragments.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("text") or item.get("content")
+                    if isinstance(text, str):
+                        fragments.append(text)
+            return "".join(fragments)
+        fallback_text = choice.get("text")
+        return fallback_text if isinstance(fallback_text, str) else ""
+
+    def _normalize_single_line_prompt(self, prompt: str) -> str:
+        return re.sub(r"\s+", " ", prompt.strip().strip("`")).strip()
+
+    def _build_apiyi_reference_prompt(self, metadata: ReferenceImageRequestMetadata) -> str:
+        return metadata.prompt.strip()
 
     def _build_apiyi_reference_system_prompt(self, metadata: ReferenceImageRequestMetadata) -> str | None:
-        if metadata.feature != "multi_view":
-            return None
-        return (
-            "你是专业珠宝产品多视图生成助手。"
-            "用户消息会包含若干 few-shot 输出示例图，最后一张才是用户上传的唯一主体原图。"
-            "必须严格以最后一张用户原图作为唯一主体来源；前面的 few-shot 图只用于学习四视图排版、视角组织、背面推断方式和白底产品图呈现。"
-            "不要借用或复制 few-shot 图中的珠宝款式、材质、颜色、宝石、挂钩、链条、纹样、镶口或装饰结构。"
-            "如果需要推断侧面或背面，只能从最后一张主体图的现有结构、材质、宝石颜色和比例合理外推。"
-            "最终图片应是同一件珠宝的正面、左侧、右侧、背面四视图，采用 2x2 网格白底产品图。"
-        )
+        return None
 
     async def _post_json_with_bearer_base_url(
         self,
@@ -3138,6 +3181,12 @@ class AIService:
         if normalized == "2K":
             return "1024x1024"
         return "1024x1024"
+
+    def _gemini_thinking_level(self, value: str | None = None) -> str:
+        normalized = (value or "High").strip().lower()
+        if normalized in {"high", "deep", "深度推理"}:
+            return "High"
+        return "minimal"
 
     def _normalize_image_for_aiapis(self, image_bytes: bytes, target_size: str) -> bytes:
         side = int(target_size.split("x", 1)[0])

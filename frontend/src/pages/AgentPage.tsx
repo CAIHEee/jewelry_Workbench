@@ -436,6 +436,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
   const [optionCardLoading, setOptionCardLoading] = useState(false);
   const [optionCardLoadingText, setOptionCardLoadingText] = useState("正在生成选项卡");
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
+  const chatThreadRef = useRef<HTMLDivElement | null>(null);
   const activeConversationIdRef = useRef<string | null>(null);
   const inFlightActionIdsRef = useRef<Set<string>>(new Set());
 
@@ -456,11 +457,32 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     resizeDraftTextarea();
   }, [draft]);
 
+  useEffect(() => {
+    scrollChatThreadToBottom();
+  }, [
+    activeConversationId,
+    messages,
+    pendingDesignOptions,
+    optionCardLoading,
+    activeGeneration,
+    progressState,
+  ]);
+
   function resizeDraftTextarea() {
     const textarea = draftRef.current;
     if (!textarea) return;
     textarea.style.height = "0px";
     textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, 42), 150)}px`;
+  }
+
+  function scrollChatThreadToBottom() {
+    const scroll = () => {
+      const thread = chatThreadRef.current;
+      if (!thread) return;
+      thread.scrollTop = thread.scrollHeight;
+    };
+    window.requestAnimationFrame(scroll);
+    window.setTimeout(scroll, 80);
   }
 
   async function bootstrap() {
@@ -1228,7 +1250,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
           </div>
         ) : (
         <div className="agent-chat-body">
-          <div className="agent-chat-thread" aria-live="polite">
+          <div className="agent-chat-thread" aria-live="polite" ref={chatThreadRef}>
             {messages.length === 0 ? (
               <article className="agent-message assistant">
                 <div className="agent-message-content">

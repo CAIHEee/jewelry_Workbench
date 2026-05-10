@@ -82,9 +82,11 @@ async def _enqueue_reference_job(
     strength: float,
     image_size: str,
     current_user: User,
+    batch_index: int = 0,
+    batch_size: int = 1,
 ) -> GenerationJobAccepted:
     settings = get_settings()
-    job_service.ensure_can_enqueue(current_user=current_user)
+    job_service.ensure_can_enqueue(current_user=current_user, active_job_limit_override=batch_size)
 
     source_urls = _parse_string_array_json(source_image_urls_json, field_name="source_image_urls_json")
     source_names = _parse_string_array_json(source_image_names_json, field_name="source_image_names_json")
@@ -127,7 +129,9 @@ async def _enqueue_reference_job(
         request_payload={
             "metadata": metadata.model_dump(mode="json"),
             "source_image_urls": source_urls,
+            **({"batch_size": batch_size} if batch_size > 1 else {}),
         },
+        active_job_limit_override=batch_size,
     )
 
 
@@ -142,8 +146,14 @@ async def enqueue_reference_image_transform(
     negative_prompt: str | None = Form(default=None),
     strength: float = Form(default=0.75),
     image_size: str = Form(default="1K"),
+    batch_size: int = Form(default=1),
+    batch_index: int = Form(default=0),
     current_user: User = Depends(require_module("image_edit")),
 ) -> GenerationJobAccepted:
+    if batch_size not in {1, 2, 4}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="生成数量只能选择 1、2 或 4。")
+    if batch_index < 0 or batch_index >= batch_size:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="批量任务序号无效。")
     return await _enqueue_reference_job(
         feature_key=feature,
         image=image,
@@ -158,6 +168,8 @@ async def enqueue_reference_image_transform(
         strength=strength,
         image_size=image_size,
         current_user=current_user,
+        batch_index=batch_index,
+        batch_size=batch_size,
     )
 
 
@@ -267,8 +279,11 @@ async def enqueue_multi_view(
     negative_prompt: str | None = Form(default=None),
     strength: float = Form(default=0.75),
     image_size: str = Form(default="1K"),
+    batch_size: int = Form(default=1),
     current_user: User = Depends(require_module("multi_view")),
 ) -> GenerationJobAccepted:
+    if batch_size not in {1, 2, 4}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="生成数量只能选择 1、2 或 4。")
     return await _enqueue_reference_job(
         feature_key="multi_view",
         image=image,
@@ -283,6 +298,7 @@ async def enqueue_multi_view(
         strength=strength,
         image_size=image_size,
         current_user=current_user,
+        batch_size=batch_size,
     )
 
 

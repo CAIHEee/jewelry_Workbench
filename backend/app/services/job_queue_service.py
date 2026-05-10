@@ -34,8 +34,9 @@ class JobQueueService:
         self.settings = get_settings()
         self.cache_service = get_cache_service()
 
-    def ensure_can_enqueue(self, *, current_user: User) -> None:
-        limit = self.settings.queue_root_max_active_jobs if current_user.role == "root" else self.settings.queue_user_max_active_jobs
+    def ensure_can_enqueue(self, *, current_user: User, active_job_limit_override: int | None = None) -> None:
+        base_limit = self.settings.queue_root_max_active_jobs if current_user.role == "root" else self.settings.queue_user_max_active_jobs
+        limit = max(base_limit, active_job_limit_override or base_limit)
         with SessionLocal() as session:
             active_count = session.scalar(
                 select(func.count())
@@ -56,8 +57,9 @@ class JobQueueService:
         model: str | None,
         prompt: str | None,
         request_payload: dict[str, Any],
+        active_job_limit_override: int | None = None,
     ) -> GenerationJobAccepted:
-        self.ensure_can_enqueue(current_user=current_user)
+        self.ensure_can_enqueue(current_user=current_user, active_job_limit_override=active_job_limit_override)
         request_hash = self._build_request_hash(
             current_user_id=current_user.id,
             feature_key=feature_key,
@@ -266,15 +268,65 @@ class JobQueueService:
         metadata = ReferenceImageRequestMetadata.model_validate(request_payload["metadata"])
         source_image_urls = request_payload.get("source_image_urls") or []
 
+        batch_size = int(request_payload.get("batch_size") or 1)
+        if batch_size > 1:
+            results = await asyncio.gather(
+                *[
+                    self._execute_reference_job(
+                        feature_key=feature_key,
+                        metadata=metadata,
+                        source_image_urls=source_image_urls,
+                        current_user=current_user,
+                        job_id=job_id,
+                    )
+                    for _ in range(batch_size)
+                ],
+                return_exceptions=True,
+            )
+            succeeded = [item for item in results if not isinstance(item, Exception)]
+            if not succeeded:
+                first_error = next((item for item in results if isinstance(item, Exception)), None)
+                if first_error is not None:
+                    raise first_error
+                raise RuntimeError("批量生成失败。")
+            first_result = succeeded[0].model_dump(mode="json")
+            first_result["results"] = [item.model_dump(mode="json") for item in succeeded]
+            failed_count = len(results) - len(succeeded)
+            if failed_count:
+                first_result["message"] = f"已完成 {len(succeeded)}/{batch_size} 张，{failed_count} 张生成失败。"
+            else:
+                first_result["message"] = f"已完成 {len(succeeded)}/{batch_size} 张。"
+            return first_result
+
+        result = await self._execute_reference_job(
+            feature_key=feature_key,
+            metadata=metadata,
+            source_image_urls=source_image_urls,
+            current_user=current_user,
+            job_id=job_id,
+        )
+        return result.model_dump(mode="json")
+
+    async def _execute_reference_job(
+        self,
+        *,
+        feature_key: str,
+        metadata: ReferenceImageRequestMetadata,
+        source_image_urls: list[str],
+        current_user: User,
+        job_id: str,
+    ):
+        service = AIService()
+        stage_callback = lambda stage: self._handle_stage_callback(job_id, stage)
+
         if feature_key == "multi_view":
-            result = await service.generate_multi_view(
+            return await service.generate_multi_view(
                 file=None,
                 metadata=metadata,
                 current_user=current_user,
                 source_image_urls=source_image_urls or None,
                 stage_callback=stage_callback,
             )
-            return result.model_dump(mode="json")
 
         if len(source_image_urls) > 1:
             result = await service.transform_reference_images(
@@ -284,7 +336,7 @@ class JobQueueService:
                 source_image_urls=source_image_urls,
                 stage_callback=stage_callback,
             )
-            return result.model_dump(mode="json")
+            return result
 
         result = await service.transform_reference_image(
             file=None,
@@ -293,7 +345,7 @@ class JobQueueService:
             source_image_url=source_image_urls[0] if source_image_urls else None,
             stage_callback=stage_callback,
         )
-        return result.model_dump(mode="json")
+        return result
 
     def _handle_stage_callback(self, job_id: str, stage: str) -> None:
         if stage == "uploading":

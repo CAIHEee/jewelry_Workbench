@@ -36,6 +36,7 @@ export interface GenerationResult {
   revised_prompt?: string | null;
   message: string;
   raw_response?: Record<string, unknown> | null;
+  results?: GenerationResult[];
 }
 
 export interface FusionRequest {
@@ -83,6 +84,8 @@ export interface ReferenceImageTransformRequest {
   negativePrompt?: string;
   strength?: number;
   imageSize?: string;
+  batchSize?: 1 | 2 | 4;
+  batchIndex?: number;
 }
 
 export interface MultiViewSplitRequest {

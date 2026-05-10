@@ -17,6 +17,7 @@ import type { ModuleHistoryEntry } from "../utils/history";
 interface MultiViewPageProps {
   assetItems: AssetItem[];
   onRecordRun: (run: Omit<WorkspaceRun, "id" | "createdAt">) => void;
+  onRefreshHistory?: () => Promise<void> | void;
   pageRuns: ModuleHistoryEntry[];
   onDeleteHistory?: (historyId: string) => Promise<void> | void;
 }
@@ -30,6 +31,8 @@ const progressPhases = [
 ];
 const preferredMultiViewModelId = "gpt-image-2-all-apiyi";
 const allowedMultiViewModelIds = new Set(["gpt-image-2-all-apiyi", "multi-view-few-shot-apiyi"]);
+const generationCountOptions = [1, 2, 4] as const;
+type GenerationCount = (typeof generationCountOptions)[number];
 const jobProgressLabels = {
   queued: "多视图任务排队中...",
   running: "生成多角度视图中...",
@@ -38,7 +41,7 @@ const jobProgressLabels = {
   failed: "多视图生成失败",
 };
 
-export function MultiViewPage({ assetItems, onRecordRun, pageRuns, onDeleteHistory }: MultiViewPageProps) {
+export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefreshHistory, pageRuns, onDeleteHistory }: MultiViewPageProps) {
   const { models, error: modelError, defaultModelId } = useModelCatalog((model) => allowedMultiViewModelIds.has(model.id));
   const multiViewDefaultModelId = useMemo(
     () => models.find((item) => item.id === preferredMultiViewModelId)?.id ?? defaultModelId,
@@ -48,7 +51,8 @@ export function MultiViewPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
   const [files, setFiles] = useState<File[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<AssetItem[]>([]);
   const [additionalPrompt, setAdditionalPrompt] = useState("");
-  const [result, setResult] = useState<GenerationResult | null>(null);
+  const [results, setResults] = useState<GenerationResult[]>([]);
+  const [generationCount, setGenerationCount] = useState<GenerationCount>(1);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -64,17 +68,18 @@ export function MultiViewPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
   }, [model, models, multiViewDefaultModelId]);
 
   useEffect(() => {
-    if (result || selectedHistoryId || pageRuns.length === 0) {
+    if (results.length > 0 || selectedHistoryId || pageRuns.length === 0) {
       return;
     }
     setSelectedHistoryId(pageRuns[0].id);
-  }, [pageRuns, result, selectedHistoryId]);
+  }, [pageRuns, results.length, selectedHistoryId]);
 
   const selectedModel = useMemo(() => models.find((item) => item.id === model) ?? models[0] ?? null, [model, models]);
   const uploadedPreviewUrl = useMemo(() => (files[0] ? URL.createObjectURL(files[0]) : null), [files]);
   const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
-  const activeHistory = selectedHistory ?? (!result ? pageRuns[0] ?? null : null);
-  const previewResultUrl = activeHistory?.imageUrl ?? result?.image_url ?? null;
+  const activeHistory = selectedHistory ?? (results.length === 0 ? pageRuns[0] ?? null : null);
+  const latestResult = results[0] ?? null;
+  const previewResultUrl = activeHistory?.imageUrl ?? latestResult?.image_url ?? null;
   const previewSourceUrl = activeHistory?.sourceImageUrl ?? (uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? null);
 
   useEffect(() => {
@@ -92,6 +97,8 @@ export function MultiViewPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
     }
     setLoading(true);
     setError(null);
+    setResults([]);
+    setSelectedHistoryId(null);
     setProgressState("running");
     setJobProgress({ percent: 18, label: "多视图任务排队中..." });
 
@@ -135,28 +142,32 @@ export function MultiViewPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
         model: selectedModel.id,
         prompt: displayPrompt,
         feature: "multi_view",
+        batchSize: generationCount,
       }, {
-        onJobUpdate: (job) => setJobProgress(buildGenerationJobProgress(job, jobProgressLabels)),
+        onJobUpdate: (job) => {
+          const nextProgress = buildGenerationJobProgress(job, jobProgressLabels);
+          setJobProgress({
+            ...nextProgress,
+            label: generationCount > 1 ? `${nextProgress.label}（批量 ${generationCount} 张）` : nextProgress.label,
+          });
+        },
       });
-      if (!response.image_url) {
+      const responseItems = response.results?.length ? response.results : [response];
+      const validResponses = responseItems.filter((item) => Boolean(item.image_url));
+      if (validResponses.length === 0) {
         throw new Error("生成完成，但没有返回多视图结果图片，请稍后重试。");
       }
 
-      const recordedPrompt = response.revised_prompt || displayPrompt;
-      setResult(response);
-      setSelectedHistoryId(null);
-      onRecordRun({
-        kind: "multi_view",
-        title: "生成多视图",
-        model: selectedModel.id,
-        provider: response.provider,
-        status: response.status,
-        imageUrl: response.image_url,
-        sourceImageUrl: response.source_image_url ?? uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? null,
-        prompt: recordedPrompt,
-      });
-      setJobProgress({ percent: 100, label: "已完成" });
+      setResults([...validResponses].reverse());
+      setJobProgress({ percent: 100, label: generationCount > 1 ? `已完成 ${validResponses.length}/${generationCount} 张` : "已完成" });
       setProgressState("success");
+      await onRefreshHistory?.();
+      window.setTimeout(() => {
+        void onRefreshHistory?.();
+      }, 800);
+      if (validResponses.length < generationCount) {
+        setError(`已完成 ${validResponses.length}/${generationCount} 张，${generationCount - validResponses.length} 张生成失败或超时。`);
+      }
     } catch (submitError) {
       setLoading(false);
       setProgressState("error");
@@ -211,6 +222,25 @@ export function MultiViewPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
               />
             </label>
 
+            <div className="input-group compact-input-group">
+              <span>生成数量</span>
+              <div className="count-segmented" role="radiogroup" aria-label="生成数量">
+                {generationCountOptions.map((count) => (
+                  <button
+                    className={generationCount === count ? "count-option active" : "count-option"}
+                    type="button"
+                    key={count}
+                    role="radio"
+                    aria-checked={generationCount === count}
+                    onClick={() => setGenerationCount(count)}
+                    disabled={loading}
+                  >
+                    {count}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <GenerationProgress
               state={progressState}
               phases={progressPhases}
@@ -221,7 +251,7 @@ export function MultiViewPage({ assetItems, onRecordRun, pageRuns, onDeleteHisto
             />
 
             <button className="primary-button align-start" type="button" onClick={handleGenerate} disabled={loading || !selectedModel}>
-              {loading ? "生成中..." : "生成多视图"}
+              {loading ? "生成中..." : `生成${generationCount > 1 ? ` ${generationCount} 张` : ""}多视图`}
             </button>
           </div>
 

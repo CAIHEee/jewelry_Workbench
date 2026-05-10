@@ -70,11 +70,11 @@ def test_extracts_apiyi_chat_completion_data_b64_json() -> None:
     assert service._extract_chat_completion_image_url(data) == "data:image/png;base64,ZmFrZS1pbWFnZQ=="
 
 
-def test_builds_apiyi_multi_view_context_prompt() -> None:
+def test_apiyi_reference_prompt_uses_qwen_output_without_old_chain() -> None:
     service = AIService()
     metadata = ReferenceImageRequestMetadata(
         model="gpt-image-2-all-apiyi",
-        prompt="生成标准四视图",
+        prompt="Qwen 反推后的多视图提示词",
         feature="multi_view",
         filename="style.png",
         image_count=3,
@@ -82,33 +82,80 @@ def test_builds_apiyi_multi_view_context_prompt() -> None:
 
     prompt = service._build_apiyi_reference_prompt(metadata)
 
-    assert "前面的图片都是 few-shot 输出示例" in prompt
-    assert "最后一张图片是必须生成四视图的原图主体" in prompt
-    assert "不要复制前面示例图的款式" in prompt
-    assert "生成标准四视图" in prompt
+    assert prompt == "Qwen 反推后的多视图提示词"
+    assert service._build_apiyi_reference_system_prompt(metadata) is None
 
 
-def test_builds_apiyi_few_shot_multi_view_prompt() -> None:
+def test_builds_qwen_multi_view_prompt_request_text() -> None:
     service = AIService()
-    metadata = ReferenceImageRequestMetadata(
-        model="gpt-image-2-all-apiyi",
-        prompt="默认多视图规则",
-        feature="multi_view",
-        filename="source.png",
-        image_count=6,
-    )
 
-    prompt = service._build_apiyi_reference_prompt(metadata)
-    system_prompt = service._build_apiyi_reference_system_prompt(metadata)
+    prompt = service._build_qwen_multi_view_prompt_request_text("保留翡翠绿色")
 
-    assert "few-shot 输出示例图" in prompt
-    assert "图6：用户上传的唯一主体原图" in prompt
-    assert "默认多视图规则" not in prompt
-    assert system_prompt is not None
-    assert "最后一张才是用户上传的唯一主体原图" in system_prompt
+    assert "请反推当前珠宝图片的生成提示词" in prompt
+    assert "只输出中文纯文本" in prompt
+    assert "不要 Markdown，不要换行符" in prompt
+    assert "参考 gpt image 2 的提示词编写规范" in prompt
+    assert "正视（需与原图一致）" in prompt
+    assert "左侧视（90度）" in prompt
+    assert "右侧视（90度）" in prompt
+    assert "背视" in prompt
+    assert "one-shot 结构示例" in prompt
+    assert "一枚高端珠宝设计图，展示一件胸针" in prompt
+    assert "正面垂直视角，需与原图完全一致" in prompt
+    assert "不要照抄示例中的珠宝类型、颜色、材质、结构或数字" in prompt
+    assert prompt.index("one-shot 结构示例") < prompt.index("用户补充提示词：保留翡翠绿色")
+    assert prompt.endswith("现在请基于当前图片和用户补充提示词，直接输出最终生图提示词。")
+    assert "{{" not in prompt
+    assert "}}" not in prompt
+    assert "用户补充提示词：保留翡翠绿色" in prompt
 
 
-def test_apiyi_chat_payload_marks_reference_and_source_images(monkeypatch) -> None:
+def test_qwen_multi_view_prompt_payload_uses_image_and_thinking(monkeypatch) -> None:
+    service = AIService()
+    monkeypatch.setattr(service.settings, "agent_llm_api_key", "test-qwen-key")
+    monkeypatch.setattr(service.settings, "multi_view_prompt_model", "qwen3-vl-flash")
+    monkeypatch.setattr(service.settings, "multi_view_prompt_thinking_budget", 81920)
+
+    captured: dict[str, object] = {}
+
+    async def fake_post_dashscope_qwen_chat(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+        return {"choices": [{"message": {"content": "  生成四视图\n保留主体  "}}]}
+
+    monkeypatch.setattr(service, "_post_dashscope_qwen_chat", fake_post_dashscope_qwen_chat)
+
+    async def run_request() -> str:
+        upload = UploadFile(filename="source.png", file=BytesIO(b"source"), headers={"content-type": "image/png"})
+        try:
+            return await service._build_qwen_multi_view_prompt(
+                input_file=upload,
+                metadata=ReferenceImageRequestMetadata(
+                    model="gpt-image-2-all-apiyi",
+                    prompt="增加侧面厚度",
+                    feature="multi_view",
+                    filename="source.png",
+                    image_count=1,
+                ),
+            )
+        finally:
+            upload.file.close()
+
+    prompt = asyncio.run(run_request())
+
+    assert prompt == "生成四视图 保留主体"
+    assert captured["api_key"] == "test-qwen-key"
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert payload["model"] == "qwen3-vl-flash"
+    assert payload["stream"] is True
+    assert payload["enable_thinking"] is True
+    assert payload["thinking_budget"] == 81920
+    content = payload["messages"][0]["content"]
+    assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert "用户补充提示词：增加侧面厚度" in content[1]["text"]
+
+
+def test_apiyi_chat_payload_uses_generated_prompt_and_images(monkeypatch) -> None:
     service = AIService()
     monkeypatch.setattr(service, "_require_apiyi_api_key", lambda: "test-key")
 
@@ -128,9 +175,8 @@ def test_apiyi_chat_payload_marks_reference_and_source_images(monkeypatch) -> No
         ]
         await service._post_apiyi_gpt_image2_chat(
             model=service._get_model_or_404("gpt-image-2-all-apiyi"),
-            prompt="生成多视图",
+            prompt="Qwen 生成的新多视图提示词",
             files=files,
-            system_prompt="只使用用户原图",
         )
 
         for item in files:
@@ -141,15 +187,13 @@ def test_apiyi_chat_payload_marks_reference_and_source_images(monkeypatch) -> No
     payload = captured["payload"]
     assert isinstance(payload, dict)
     messages = payload["messages"]
-    assert messages[0]["role"] == "system"
-    assert messages[0]["content"] == "只使用用户原图"
-    assert messages[1]["role"] == "user"
-    content = messages[1]["content"]
-    assert content[0]["text"] == "生成多视图"
-    assert content[1]["text"] == "few-shot 输出示例图 1：example-a.png"
-    assert content[3]["text"] == "few-shot 输出示例图 2：example-b.png"
-    assert content[5]["text"] == "用户上传的唯一主体原图：source.png"
-    assert content[6]["image_url"]["url"].startswith("data:image/")
+    assert len(messages) == 1
+    assert messages[0]["role"] == "user"
+    content = messages[0]["content"]
+    assert content[0]["text"] == "Qwen 生成的新多视图提示词"
+    assert content[1]["image_url"]["url"].startswith("data:image/")
+    assert content[2]["image_url"]["url"].startswith("data:image/")
+    assert content[3]["image_url"]["url"].startswith("data:image/")
 
 
 def test_text_to_image_rejects_unknown_model(auth_client: TestClient) -> None:
