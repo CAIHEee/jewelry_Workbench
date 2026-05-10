@@ -350,19 +350,24 @@ class JobQueueService:
     def _handle_stage_callback(self, job_id: str, stage: str) -> None:
         if stage == "uploading":
             self.mark_uploading(job_id)
+            return
+        if stage in {"qwen_prompt", "image_generation"}:
+            self._update_job(job_id, status="running", result_json=self._dump_json({"stage": stage}))
 
     def _to_schema(self, job: GenerationJob) -> GenerationJobStatusResponse:
         normalized_error = self._format_exception_message(job.error_message) if job.error_message else None
         result = self._load_json(job.result_json)
+        stage = self._extract_job_stage(result) if job.status == "running" else None
         return GenerationJobStatusResponse(
             job_id=job.id,
             feature=job.feature_key,
             status=job.status,  # type: ignore[arg-type]
+            stage=stage,
             model=job.model,
             prompt=job.prompt,
-            message=self._status_message(job.status, error_message=normalized_error),
+            message=self._status_message(job.status, stage=stage, error_message=normalized_error),
             error_message=normalized_error,
-            result=result,
+            result=None if stage and result == {"stage": stage} else result,
             created_at=self._normalize_datetime(job.created_at),
             started_at=self._normalize_datetime(job.started_at) if job.started_at else None,
             completed_at=self._normalize_datetime(job.completed_at) if job.completed_at else None,
@@ -581,7 +586,17 @@ class JobQueueService:
         )
         return upstream_status == 402 or any(marker in normalized for marker in balance_markers)
 
-    def _status_message(self, status_value: str, *, error_message: str | None) -> str:
+    def _extract_job_stage(self, result: dict[str, Any] | None) -> str | None:
+        if not isinstance(result, dict):
+            return None
+        stage = result.get("stage")
+        return stage if isinstance(stage, str) and stage else None
+
+    def _status_message(self, status_value: str, *, stage: str | None = None, error_message: str | None) -> str:
+        if status_value == "running" and stage == "qwen_prompt":
+            return "反推模型正在分析原图并生成提示词。"
+        if status_value == "running" and stage == "image_generation":
+            return "提示词已生成，正在生成多视图。"
         mapping = {
             "queued": "任务排队中。",
             "running": "任务执行中。",

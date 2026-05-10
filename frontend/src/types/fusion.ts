@@ -130,6 +130,7 @@ export interface GenerationJobStatusResponse {
   job_id: string;
   feature: string;
   status: GenerationJobStatus;
+  stage?: string | null;
   model?: string | null;
   prompt?: string | null;
   message: string;

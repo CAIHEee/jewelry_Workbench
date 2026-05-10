@@ -2257,8 +2257,9 @@ class AIService:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="DASHSCOPE_API_KEY or AGENT_LLM_API_KEY is required for multi-view prompt generation.",
-            )
+        )
 
+        self._notify_stage("qwen_prompt")
         data_url = await self._file_to_data_url(input_file)
         prompt = self._build_qwen_multi_view_prompt_request_text(metadata.prompt)
         data = await self._post_dashscope_qwen_chat(
@@ -2285,36 +2286,22 @@ class AIService:
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail={"message": "Qwen prompt generation returned no content.", "upstream_response": data},
             )
+        self._notify_stage("image_generation")
         return self._normalize_single_line_prompt(generated_prompt)
 
     def _build_qwen_multi_view_prompt_request_text(self, user_prompt: str | None) -> str:
         normalized_user_prompt = self._normalize_multi_view_user_prompt(user_prompt)
-        one_shot_prompt = self._render_multi_view_one_shot_template(
-            {
-                "jewelry_type": "胸针",
-                "design_style": "高级珠宝设计",
-                "shape_description": "自然枝蔓延展",
-                "gem_color_1": "祖母绿绿色",
-                "gem_color_2": "紫色",
-                "gem_color_3": "橙色",
-                "metal_color": "18K黄金色",
-                "overall_structure": "左右对称的枝蔓式",
-                "central_feature": "椭圆形主石",
-                "branch_count": "三个",
-                "render_style": "高端珠宝产品渲染",
-            }
-        )
+        one_shot_prompt = self._multi_view_prompt_template_context()
         user_prompt_section = normalized_user_prompt or "无"
         request_template = PromptTemplate.from_template(
             (
                 "任务：请反推当前珠宝图片的生成提示词，并集成给出一份新的生图提示词。"
-                "目标模型：gpt image 2。"
                 "输出要求：参考 gpt image 2 的提示词编写规范，只输出中文纯文本，不要 Markdown，不要换行符，不要额外解释。"
                 "新提示词必须要求生成该珠宝的四个角度视角：正视图、左侧视90度、右侧视90度、背视图。"
                 "四视角必须明确写为：正视（需与原图一致）、左侧视（90度）、右侧视（90度）、背视。"
-                "正视图必须与原图完全一致；左侧视和右侧视必须清楚表达90度侧面结构；背视必须合理展示背面结构和镶嵌细节。"
+                "正视图必须与原图完全一致，无需过多赘述；左侧视和右侧视必须清楚表达90度侧面结构和需要呈现的3D立体感；背视必须合理描述背面结构和镶嵌细节。"
                 "请先观察当前图片，反推珠宝类型、设计风格、造型、宝石颜色、金属颜色、整体结构、中心特征、分支数量和渲染风格，再把这些信息写入最终提示词。"
-                "下面是一份 one-shot 结构示例，只学习结构和描述粒度，不要照抄示例中的珠宝类型、颜色、材质、结构或数字："
+                "下面是一份通用提示词模板，只作为结构上下文，仅供参考，最终生成提示词不需完全参照提示词模板的具体描述："
                 "{one_shot_prompt}"
                 " 用户补充提示词：{user_prompt}。"
                 "现在请基于当前图片和用户补充提示词，直接输出最终生图提示词。"
@@ -2322,23 +2309,22 @@ class AIService:
         )
         return request_template.format(one_shot_prompt=one_shot_prompt, user_prompt=user_prompt_section)
 
-    def _render_multi_view_one_shot_template(self, values: dict[str, str]) -> str:
+    def _multi_view_prompt_template_context(self) -> str:
         template = PromptTemplate.from_template(
             (
             "一枚高端珠宝设计图，展示一件{{jewelry_type}}。设计风格为{{design_style}}，采用{{shape_description}}造型。"
             "珠宝由多个不规则形状的宝石组成，包括{{gem_color_1}}、{{gem_color_2}}、{{gem_color_3}}等颜色，镶嵌在{{metal_color}}的金属框架中。"
             "整体呈{{overall_structure}}结构，中间有一个较大的{{central_feature}}，两侧各延伸出{{branch_count}}个分支。"
             "背景为纯白色，突出珠宝设计。图片需包含四个视角的展示："
-            "1. 正视图：正面垂直视角，需与原图完全一致。清晰展示{{overall_structure}}结构，中间的{{central_feature}}以及两侧的分支。"
-            "每个分支上的不规则宝石（{{gem_color_1}}、{{gem_color_2}}、{{gem_color_3}}）位置和形状需与原图完全相同。{{metal_color}}金属框架的线条和厚度需保持一致。"
-            "2. 左侧视：从左侧90度角拍摄，展示珠宝的立体感和深度。清晰呈现{{overall_structure}}结构的侧面轮廓，各分支宝石的厚度和金属框架的侧面线条。背景为纯白色，光线均匀，突出珠宝的立体结构。"
-            "3. 右侧视：从右侧90度角拍摄，展示珠宝的另一侧立体感。与左侧视形成对称视角，清晰呈现{{overall_structure}}结构的侧面轮廓，各分支宝石的厚度和金属框架的侧面线条。背景为纯白色，光线均匀。"
-            "4. 背视：背面视角，展示珠宝的背面结构。清晰呈现{{overall_structure}}结构的背面金属框架，各分支宝石的背面镶嵌方式，以及金属框架的{{central_feature}}。背景为纯白色，光线均匀，突出背面设计细节。"
+            "1. 正视图：正面垂直视角，需与参照图一致保持不变。"
+            "2. 左侧视：从左侧90度角拍摄，展示珠宝的立体感和深度。清晰呈现{{overall_structure}}结构的侧面轮廓，各分支宝石的厚度和金属框架的侧面线条。光线均匀，突出珠宝的立体结构。"
+            "3. 右侧视：从右侧90度角拍摄，展示珠宝的另一侧立体感。与左侧视形成对称视角，清晰呈现{{overall_structure}}结构的侧面轮廓，各分支宝石的厚度和金属框架的侧面线条。光线均匀。"
+            "4. 背视：背面视角，展示珠宝的背面结构。清晰呈现{{overall_structure}}结构的背面金属框架，各分支宝石的背面镶嵌方式，以及金属框架的{{central_feature}}。光线均匀，突出背面设计细节。"
             "整体风格：{{render_style}}，线条清晰，色彩鲜艳，构图简洁，背景纯白，突出珠宝设计的立体感和结构细节，细节清晰。"
             ),
             template_format="mustache",
         )
-        return template.format(**values)
+        return template.template
 
     def _require_dashscope_api_key(self) -> str | None:
         dashscope_api_key = getattr(self.settings, "dashscope_api_key", None)

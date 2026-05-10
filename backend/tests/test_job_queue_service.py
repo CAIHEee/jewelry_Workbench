@@ -1,6 +1,32 @@
+from datetime import datetime, timezone
+
 from fastapi import HTTPException
 
+from app.models.generation_job import GenerationJob
 from app.services.job_queue_service import JobQueueService
+
+
+def test_job_status_exposes_qwen_prompt_stage() -> None:
+    service = JobQueueService()
+    job = GenerationJob(
+        id="job-qwen-stage",
+        user_id="user-1",
+        queue_name="test",
+        rq_job_id="rq-job-qwen-stage",
+        feature_key="multi_view",
+        model="gpt-image-2-all-apiyi",
+        prompt="生成多视图",
+        status="running",
+        result_json='{"stage":"qwen_prompt"}',
+        created_at=datetime.now(timezone.utc),
+    )
+
+    response = service._to_schema(job)
+
+    assert response.status == "running"
+    assert response.stage == "qwen_prompt"
+    assert response.message == "反推模型正在分析原图并生成提示词。"
+    assert response.result is None
 
 
 def test_job_error_formats_upstream_insufficient_balance_code() -> None:

@@ -24,8 +24,9 @@ interface MultiViewPageProps {
 
 const defaultMultiViewPromptLabel = "默认多视图规则";
 const progressPhases = [
-  { at: 18, label: "分析主视图结构..." },
-  { at: 40, label: "提交多视图请求..." },
+  { at: 18, label: "多视图任务排队中..." },
+  { at: 34, label: "反推模型分析原图中..." },
+  { at: 46, label: "生成多视图提示词..." },
   { at: 74, label: "生成多角度视图中..." },
   { at: 95, label: "拼合四宫格结果..." },
 ];
@@ -35,6 +36,8 @@ const generationCountOptions = [1, 2, 4] as const;
 type GenerationCount = (typeof generationCountOptions)[number];
 const jobProgressLabels = {
   queued: "多视图任务排队中...",
+  qwenPrompt: "反推模型分析原图并生成提示词中...",
+  imageGeneration: "提示词已生成，正在生成多视图...",
   running: "生成多角度视图中...",
   uploading: "正在拼合并保存多视图结果...",
   succeeded: "已完成",
@@ -81,6 +84,17 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
   const latestResult = results[0] ?? null;
   const previewResultUrl = activeHistory?.imageUrl ?? latestResult?.image_url ?? null;
   const previewSourceUrl = activeHistory?.sourceImageUrl ?? (uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? null);
+  const selectedAssetRefs = useMemo(
+    () =>
+      selectedAssets
+        .map((asset) => ({
+          url: asset.fileUrl ?? asset.previewUrl ?? asset.storageUrl ?? null,
+          name: asset.name,
+        }))
+        .filter((item): item is { url: string; name: string } => Boolean(item.url)),
+    [selectedAssets],
+  );
+  const hasInputSource = files.length > 0 || selectedAssetRefs.length > 0;
 
   useEffect(() => {
     return () => {
@@ -95,38 +109,30 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
     if (loading) {
       return;
     }
-    setLoading(true);
     setError(null);
-    setResults([]);
-    setSelectedHistoryId(null);
-    setProgressState("running");
-    setJobProgress({ percent: 18, label: "多视图任务排队中..." });
 
     if (!selectedModel) {
       setError("当前没有可用的多视图模型。");
-      setLoading(false);
       return;
     }
 
-    if (files.length === 0 && selectedAssets.length === 0) {
+    if (!hasInputSource) {
       setError("请先选择一张原图。");
-      setLoading(false);
       return;
     }
 
     if (files.length > 1) {
       setError("多视图模型只支持上传 1 张原图。");
-      setLoading(false);
       return;
     }
 
+    setLoading(true);
+    setResults([]);
+    setSelectedHistoryId(null);
+    setProgressState("running");
+    setJobProgress({ percent: 18, label: "多视图任务排队中..." });
+
     try {
-      const selectedAssetRefs = selectedAssets
-        .map((asset) => ({
-          url: asset.fileUrl ?? asset.previewUrl ?? asset.storageUrl ?? null,
-          name: asset.name,
-        }))
-        .filter((item): item is { url: string; name: string } => Boolean(item.url));
       const selectedAssetUrls = selectedAssetRefs.map((item) => item.url);
       const selectedAssetNames = selectedAssetRefs.map((item) => item.name);
       if (files.length === 0 && selectedAssetUrls.length === 0) {
@@ -250,7 +256,7 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
               progressLabel={jobProgress?.label ?? null}
             />
 
-            <button className="primary-button align-start" type="button" onClick={handleGenerate} disabled={loading || !selectedModel}>
+            <button className="primary-button align-start" type="button" onClick={handleGenerate} disabled={loading || !selectedModel || !hasInputSource}>
               {loading ? "生成中..." : `生成${generationCount > 1 ? ` ${generationCount} 张` : ""}多视图`}
             </button>
           </div>

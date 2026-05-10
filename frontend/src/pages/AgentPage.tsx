@@ -1193,6 +1193,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
   );
   const visibleActiveGeneration =
     activeGeneration?.conversationId === activeConversationId && !activeGenerationAlreadyPersisted ? activeGeneration : null;
+  const isConversationEnded = activeConversationStatus === "ended" || activeConversationStage === "ended";
   const visibleGenerationFailed = Boolean(visibleActiveGeneration?.errorMessage) || progressState === "error";
   const visibleActiveGenerationModuleKey = visibleActiveGeneration?.moduleKey;
   const visibleWorkflowStageModuleKey = getWorkflowStageModuleKey(visibleActiveGenerationModuleKey, visibleActiveGeneration?.sourceAssets);
@@ -1205,8 +1206,9 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     normalizeOptionCardText(pendingDesignQuestion) === normalizeOptionCardText(latestAssistantPlainMessage);
   const optionCardHeadline = duplicateDesignQuestion ? "请选择下一步" : pendingDesignQuestion || "请选择一个方向";
   const shouldShowDesignRefreshButton = pendingDesignOptionSource !== "ready";
-  const isDesignChoiceLocked = pendingDesignOptions.length > 0 && !loading;
+  const isDesignChoiceLocked = !isConversationEnded && pendingDesignOptions.length > 0 && !loading;
   const hasUnconsumedLatestResultOptions = messages.some((message) => {
+    if (isConversationEnded) return false;
     const generationEvent = getGenerationEvent(message);
     const resultAsset = generationEvent?.result_asset ?? message.attachments?.[0] ?? null;
     const resultUrl = generationEvent ? getAssetPreviewUrl(resultAsset) : null;
@@ -1223,7 +1225,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
   const isTextComposerLocked = isComposerLocked;
   const canSendPendingAttachmentDuringDesignChoice = isDesignChoiceLocked && (files.length > 0 || selectedAssetItems.length > 0);
   const shouldShowOptionCardLoading =
-    Boolean(activeConversationId) && mode === "design" && loading && optionCardLoading && pendingDesignOptions.length === 0;
+    !isConversationEnded && Boolean(activeConversationId) && mode === "design" && loading && optionCardLoading && pendingDesignOptions.length === 0;
   const localRefineSourceAsset = pendingLocalRefineContext?.resultAsset ?? latestGeneratedAsset ?? null;
   const localRefineSourceUrl = getAssetPreviewUrl(localRefineSourceAsset);
 
@@ -1266,7 +1268,8 @@ export function AgentPage({ assetItems }: AgentPageProps) {
               const isLatestResult = Boolean(resultUrl && latestGeneratedAsset && resultUrl === getAssetPreviewUrl(latestGeneratedAsset));
               const generationModuleKey = generationEvent?.module_key;
               const workflowStageModuleKey = getWorkflowStageModuleKey(generationModuleKey, generationEvent?.source_assets);
-              const showResultOptions = isLatestResult && !visibleActiveGeneration && !loading && !consumedResultMessageIds.has(message.id);
+              const showResultOptions =
+                !isConversationEnded && isLatestResult && !visibleActiveGeneration && !loading && !consumedResultMessageIds.has(message.id);
               const isStreamingAssistant = message.role === "assistant" && message.id === streamingAssistantId;
               return (
                 <div className="agent-message-group" key={message.id}>

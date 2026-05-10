@@ -99,21 +99,24 @@ def test_builds_qwen_multi_view_prompt_request_text() -> None:
     assert "左侧视（90度）" in prompt
     assert "右侧视（90度）" in prompt
     assert "背视" in prompt
-    assert "one-shot 结构示例" in prompt
-    assert "一枚高端珠宝设计图，展示一件胸针" in prompt
+    assert "通用提示词模板" in prompt
+    assert "一枚高端珠宝设计图，展示一件{{jewelry_type}}" in prompt
+    assert "{{gem_color_1}}" in prompt
+    assert "{{metal_color}}" in prompt
     assert "正面垂直视角，需与原图完全一致" in prompt
-    assert "不要照抄示例中的珠宝类型、颜色、材质、结构或数字" in prompt
-    assert prompt.index("one-shot 结构示例") < prompt.index("用户补充提示词：保留翡翠绿色")
+    assert "仅供参考" in prompt
+    assert "最终生成提示词不需完全参照提示词模板的具体描述" in prompt
+    assert "胸针" not in prompt
+    assert "祖母绿绿色" not in prompt
+    assert prompt.index("通用提示词模板") < prompt.index("用户补充提示词：保留翡翠绿色")
     assert prompt.endswith("现在请基于当前图片和用户补充提示词，直接输出最终生图提示词。")
-    assert "{{" not in prompt
-    assert "}}" not in prompt
     assert "用户补充提示词：保留翡翠绿色" in prompt
 
 
 def test_qwen_multi_view_prompt_payload_uses_image_and_thinking(monkeypatch) -> None:
     service = AIService()
     monkeypatch.setattr(service.settings, "agent_llm_api_key", "test-qwen-key")
-    monkeypatch.setattr(service.settings, "multi_view_prompt_model", "qwen3-vl-flash")
+    monkeypatch.setattr(service.settings, "multi_view_prompt_model", "qwen3-vl-plus")
     monkeypatch.setattr(service.settings, "multi_view_prompt_thinking_budget", 81920)
 
     captured: dict[str, object] = {}
@@ -146,7 +149,7 @@ def test_qwen_multi_view_prompt_payload_uses_image_and_thinking(monkeypatch) -> 
     assert captured["api_key"] == "test-qwen-key"
     payload = captured["payload"]
     assert isinstance(payload, dict)
-    assert payload["model"] == "qwen3-vl-flash"
+    assert payload["model"] == "qwen3-vl-plus"
     assert payload["stream"] is True
     assert payload["enable_thinking"] is True
     assert payload["thinking_budget"] == 81920

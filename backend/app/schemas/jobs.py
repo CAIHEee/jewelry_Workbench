@@ -18,6 +18,7 @@ class GenerationJobStatusResponse(BaseModel):
     job_id: str
     feature: str
     status: JobStatus
+    stage: str | None = None
     model: str | None = None
     prompt: str | None = None
     message: str
