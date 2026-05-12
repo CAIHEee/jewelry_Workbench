@@ -82,7 +82,6 @@ async def _enqueue_reference_job(
     strength: float,
     image_size: str,
     current_user: User,
-    batch_index: int = 0,
     batch_size: int = 1,
 ) -> GenerationJobAccepted:
     settings = get_settings()
@@ -147,13 +146,10 @@ async def enqueue_reference_image_transform(
     strength: float = Form(default=0.75),
     image_size: str = Form(default="1K"),
     batch_size: int = Form(default=1),
-    batch_index: int = Form(default=0),
     current_user: User = Depends(require_module("image_edit")),
 ) -> GenerationJobAccepted:
     if batch_size not in {1, 2, 4}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="生成数量只能选择 1、2 或 4。")
-    if batch_index < 0 or batch_index >= batch_size:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="批量任务序号无效。")
     return await _enqueue_reference_job(
         feature_key="image_edit",
         image=image,
@@ -168,7 +164,6 @@ async def enqueue_reference_image_transform(
         strength=strength,
         image_size=image_size,
         current_user=current_user,
-        batch_index=batch_index,
         batch_size=batch_size,
     )
 

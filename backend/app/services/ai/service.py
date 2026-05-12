@@ -2582,15 +2582,6 @@ class AIService:
         encoded = base64.b64encode(content).decode("utf-8")
         return f"data:{mime_type};base64,{encoded}"
 
-    async def _file_to_data_url_from_path(self, path: Path) -> str:
-        """从文件路径读取并转换为 base64 data URL"""
-        content = await asyncio.to_thread(path.read_bytes)
-        suffix = path.suffix.lower()
-        mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
-        mime_type = mime_map.get(suffix, "image/png")
-        encoded = base64.b64encode(content).decode("utf-8")
-        return f"data:{mime_type};base64,{encoded}"
-
     def _sort_key_for_train_files(self, path: Path) -> int:
         """从文件名提取数字序号用于排序（如 1.png -> 1, 10.png -> 10）"""
         stem = path.stem
@@ -2979,10 +2970,6 @@ class AIService:
                 return f"{sanitized_stem}_{timestamp}{extension}"
 
         return f"{self._module_display_name(kind)}_{timestamp}{extension}"
-
-    def _stored_filename_from_object_key(self, object_key: str, fallback_name: str) -> str:
-        filename = Path(object_key).name.strip()
-        return filename or fallback_name
 
     def _extension_from_content_type(self, content_type: str) -> str:
         mapping = {

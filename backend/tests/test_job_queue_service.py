@@ -103,7 +103,6 @@ def test_reference_job_ignores_client_supplied_feature(monkeypatch) -> None:
             strength=0.75,
             image_size="1K",
             batch_size=1,
-            batch_index=0,
             current_user=User(id="user-1", username="tester", role="user"),
         )
     )

@@ -85,7 +85,6 @@ export interface ReferenceImageTransformRequest {
   strength?: number;
   imageSize?: string;
   batchSize?: 1 | 2 | 4;
-  batchIndex?: number;
 }
 
 export interface MultiViewSplitRequest {

@@ -624,7 +624,6 @@ export async function submitReferenceModuleTransform(path: string, payload: Refe
   if (typeof payload.strength === "number") formData.append("strength", String(payload.strength));
   if (payload.imageSize) formData.append("image_size", payload.imageSize);
   if (payload.batchSize) formData.append("batch_size", String(payload.batchSize));
-  if (typeof payload.batchIndex === "number") formData.append("batch_index", String(payload.batchIndex));
 
   const jobPath = path.startsWith("/ai/") ? path.replace("/ai/", "/ai/jobs/") : path;
   const response = await apiFetch(buildApiUrl(jobPath), {
