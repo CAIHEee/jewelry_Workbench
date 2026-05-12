@@ -70,6 +70,17 @@ def test_extracts_apiyi_chat_completion_data_b64_json() -> None:
     assert service._extract_chat_completion_image_url(data) == "data:image/png;base64,ZmFrZS1pbWFnZQ=="
 
 
+def test_extracts_openai_payload_data_url_b64_json() -> None:
+    service = AIService()
+    data = {"data": [{"b64_json": "data:image/webp;base64,ZmFrZS1pbWFnZQ=="}]}
+
+    image_bytes, content_type, image_url = service._extract_openai_image_payload(data)
+
+    assert image_bytes == b"fake-image"
+    assert content_type == "image/webp"
+    assert image_url is None
+
+
 def test_apiyi_reference_prompt_uses_qwen_output_without_old_chain() -> None:
     service = AIService()
     metadata = ReferenceImageRequestMetadata(
@@ -98,14 +109,12 @@ def test_builds_qwen_multi_view_prompt_request_text() -> None:
     assert "必须使用中文标点断句" in prompt
     assert "不能输出没有标点的一整段长句" in prompt
     assert "正视（需与原图一致）" in prompt
-    assert "左侧视（90度）" in prompt
-    assert "右侧视（90度）" in prompt
+    assert "左侧视（45度）" in prompt
+    assert "右侧视（45度）" in prompt
     assert "背视" in prompt
-    assert "必须严格遵循的 Few-shot 提示词模板" in prompt
     assert "任务：请反推当前珠宝图片的生成提示词" in prompt
     assert "生成基于参考图的4个标准视角" in prompt
-    assert "正面垂直视角，需与参照图一致保持不变" in prompt
-    assert "最终提示词必须忠于模板的字段顺序、四视角段落和描述粒度" in prompt
+    assert "正面垂直视角，绝对与参照图一致保持一成不变" in prompt
     assert "不得删减模板要求" in prompt
     assert "不得缩写成摘要" in prompt
     assert "胸针" not in prompt
@@ -160,17 +169,17 @@ def test_qwen_multi_view_prompt_payload_uses_image_and_thinking(monkeypatch) -> 
     assert "用户补充提示词：增加侧面厚度" in content[1]["text"]
 
 
-def test_apiyi_chat_payload_uses_generated_prompt_and_images(monkeypatch) -> None:
+def test_apiyi_vip_edit_payload_uses_multipart_images(monkeypatch) -> None:
     service = AIService()
     monkeypatch.setattr(service, "_require_apiyi_api_key", lambda: "test-key")
 
     captured: dict[str, object] = {}
 
-    async def fake_post_json_with_bearer(**kwargs):  # noqa: ANN003
+    async def fake_post_multipart_with_bearer_base_url(**kwargs):  # noqa: ANN003
         captured.update(kwargs)
         return {"data": [{"url": "https://example.com/result.png"}]}
 
-    monkeypatch.setattr(service, "_post_json_with_bearer", fake_post_json_with_bearer)
+    monkeypatch.setattr(service, "_post_multipart_with_bearer_base_url", fake_post_multipart_with_bearer_base_url)
 
     async def run_request() -> None:
         files = [
@@ -178,7 +187,7 @@ def test_apiyi_chat_payload_uses_generated_prompt_and_images(monkeypatch) -> Non
             UploadFile(filename="example-b.png", file=BytesIO(b"example-b")),
             UploadFile(filename="source.png", file=BytesIO(b"source")),
         ]
-        await service._post_apiyi_gpt_image2_chat(
+        await service._post_apiyi_gpt_image2_vip_edit(
             model=service._get_model_or_404("gpt-image-2-all-apiyi"),
             prompt="Qwen 生成的新多视图提示词",
             files=files,
@@ -189,16 +198,30 @@ def test_apiyi_chat_payload_uses_generated_prompt_and_images(monkeypatch) -> Non
 
     asyncio.run(run_request())
 
-    payload = captured["payload"]
-    assert isinstance(payload, dict)
-    messages = payload["messages"]
-    assert len(messages) == 1
-    assert messages[0]["role"] == "user"
-    content = messages[0]["content"]
-    assert content[0]["text"] == "Qwen 生成的新多视图提示词"
-    assert content[1]["image_url"]["url"].startswith("data:image/")
-    assert content[2]["image_url"]["url"].startswith("data:image/")
-    assert content[3]["image_url"]["url"].startswith("data:image/")
+    assert captured["base_url"] == service.settings.apiyi_openai_base_url
+    assert captured["path"] == "/images/edits"
+    data = captured["data"]
+    assert isinstance(data, dict)
+    assert data == {
+        "model": "gpt-image-2-vip",
+        "prompt": "Qwen 生成的新多视图提示词",
+        "size": "auto",
+        "response_format": "url",
+    }
+    files = captured["files"]
+    assert isinstance(files, list)
+    assert [item[0] for item in files] == ["image", "image", "image"]
+    assert files[0][1][0] == "example-a.png"
+    assert files[1][1][0] == "example-b.png"
+    assert files[2][1][0] == "source.png"
+
+
+def test_apiyi_vip_edit_size_mapping() -> None:
+    service = AIService()
+
+    assert service._map_apiyi_vip_edit_size("1K") == "auto"
+    assert service._map_apiyi_vip_edit_size("2K") == "2048x2048"
+    assert service._map_apiyi_vip_edit_size("4K") == "2880x2880"
 
 
 def test_text_to_image_rejects_unknown_model(auth_client: TestClient) -> None:

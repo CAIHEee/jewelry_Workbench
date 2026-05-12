@@ -19,14 +19,14 @@ class TTAPIModelConfig:
 MODEL_CATALOG: dict[str, TTAPIModelConfig] = {
     "gpt-image-2-all-apiyi": TTAPIModelConfig(
         id="gpt-image-2-all-apiyi",
-        label="APIYI · GPT Image 2 All",
+        label="APIYI · GPT Image 2 VIP",
         provider=ProviderType.apiyi,
         category="image_generation",
-        upstream_model_id="gpt-image-2-all",
+        upstream_model_id="gpt-image-2-vip",
         supports_text_to_image=True,
         supports_multi_image_fusion=True,
         supports_reference_images=True,
-        pricing_hint="GPT Image 2 All via APIYI chat completions",
+        pricing_hint="GPT Image 2 VIP via APIYI image edits",
     ),
     "multi-view-few-shot-apiyi": TTAPIModelConfig(
         id="multi-view-few-shot-apiyi",

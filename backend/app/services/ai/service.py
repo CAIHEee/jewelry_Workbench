@@ -785,7 +785,7 @@ class AIService:
 
     def _build_model_pricing_hint(self, model: TTAPIModelConfig, platform_label: str) -> str:
         if model.provider == ProviderType.apiyi:
-            return "GPT Image 2 All via APIYI chat completions"
+            return model.pricing_hint
         if model.provider == ProviderType.aiapis:
             return "GPT Image 2 generation via AIAPIS relay"
         if model.provider == ProviderType.wuyin:
@@ -1095,10 +1095,14 @@ class AIService:
         model: TTAPIModelConfig,
     ) -> GenerationResult:
         prompt = self._build_fusion_prompt(metadata)
-        data = await self._post_apiyi_gpt_image2_chat(model=model, prompt=prompt, files=files)
-        upstream_image_url = self._extract_chat_completion_image_url(data)
-        stored_asset = await self._store_generated_asset(
-            image_url=upstream_image_url,
+        data = await self._post_apiyi_gpt_image2_vip_edit(
+            model=model,
+            prompt=prompt,
+            files=files,
+            size="auto",
+        )
+        stored_asset, raw_asset_metadata = await self._store_generated_result_from_openai_payload(
+            data=data,
             kind="fusion",
             model=model.id,
             preferred_name=self._preferred_fusion_asset_name(metadata),
@@ -1119,18 +1123,19 @@ class AIService:
                 model_id=model.id,
                 provider=model.provider.value,
                 status=result.status,
-                prompt=full_prompt,
+                prompt=prompt,
                 job_id=result.job_id,
                 image_url=result.image_url,
                 storage_url=stored_asset["storage_url"],
                 metadata={
                     "upstream_platform": "apiyi",
-                    "upstream_api": "chat_completions",
                     "upstream_model": model.upstream_model_id,
                     **self._build_fusion_history_metadata(metadata),
                     "negative_prompt": metadata.negative_prompt,
                     "strength": metadata.strength,
+                    "upstream_api": "images_edits",
                     **stored_asset["metadata"],
+                    **raw_asset_metadata,
                 },
             )
         return result
@@ -1323,10 +1328,14 @@ class AIService:
         model: TTAPIModelConfig,
     ) -> GenerationResult:
         prompt = self._build_apiyi_reference_prompt(metadata)
-        data = await self._post_apiyi_gpt_image2_chat(model=model, prompt=prompt, files=files)
-        upstream_image_url = self._extract_chat_completion_image_url(data)
-        stored_asset = await self._store_generated_asset(
-            image_url=upstream_image_url,
+        data = await self._post_apiyi_gpt_image2_vip_edit(
+            model=model,
+            prompt=prompt,
+            files=files,
+            size=self._map_apiyi_vip_edit_size(metadata.image_size),
+        )
+        stored_asset, raw_asset_metadata = await self._store_generated_result_from_openai_payload(
+            data=data,
             kind=metadata.feature,
             model=model.id,
             preferred_name=metadata.filename,
@@ -1355,10 +1364,11 @@ class AIService:
                 storage_url=stored_asset["storage_url"],
                 metadata={
                     "upstream_platform": "apiyi",
-                    "upstream_api": "chat_completions",
+                    "upstream_api": "images_edits",
                     "upstream_model": model.upstream_model_id,
                     "original_prompt": metadata.prompt,
                     **stored_asset["metadata"],
+                    **raw_asset_metadata,
                     **self._build_reference_history_metadata(metadata),
                 },
             )
@@ -2246,6 +2256,34 @@ class AIService:
             timeout=self.settings.apiyi_timeout_seconds,
         )
 
+    async def _post_apiyi_gpt_image2_vip_edit(
+        self,
+        *,
+        model: TTAPIModelConfig,
+        prompt: str,
+        files: list[UploadFile],
+        size: str = "auto",
+    ) -> dict[str, Any]:
+        multipart_files = [await self._build_named_multipart_file(file, field_name="image") for file in files]
+        if not multipart_files:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one image is required for APIYI image edit.",
+            )
+        return await self._post_multipart_with_bearer_base_url(
+            base_url=self.settings.apiyi_openai_base_url,
+            path="/images/edits",
+            api_key=self._require_apiyi_api_key(),
+            data={
+                "model": model.upstream_model_id,
+                "prompt": prompt,
+                "size": size,
+                "response_format": "url",
+            },
+            files=multipart_files,
+            timeout=self.settings.apiyi_timeout_seconds,
+        )
+
     async def _build_qwen_multi_view_prompt(
         self,
         *,
@@ -2906,6 +2944,11 @@ class AIService:
                     continue
                 b64_json = item.get("b64_json")
                 if isinstance(b64_json, str) and b64_json:
+                    if b64_json.startswith("data:"):
+                        header, _, encoded = b64_json.partition(",")
+                        mime_match = re.match(r"data:([^;]+);base64", header)
+                        content_type = mime_match.group(1) if mime_match else "image/png"
+                        return base64.b64decode(encoded), content_type, None
                     return base64.b64decode(b64_json), "image/png", None
                 url = item.get("url")
                 if isinstance(url, str) and url:
@@ -2946,6 +2989,13 @@ class AIService:
             "flux-kontext-max": "black-forest-labs/flux-kontext-max",
         }
         return mapping.get(model_id, model_id)
+
+    def _map_apiyi_vip_edit_size(self, image_size: str | None) -> str:
+        if image_size in {"2K", "2048x2048"}:
+            return "2048x2048"
+        if image_size in {"4K", "2880x2880"}:
+            return "2880x2880"
+        return "auto"
 
     def _persist_history(
         self,
