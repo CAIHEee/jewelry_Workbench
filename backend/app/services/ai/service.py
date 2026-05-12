@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import HTTPException, UploadFile, status
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import FewShotPromptTemplate, PromptTemplate
 from PIL import Image
 from starlette.datastructures import Headers
 
@@ -2291,36 +2291,44 @@ class AIService:
 
     def _build_qwen_multi_view_prompt_request_text(self, user_prompt: str | None) -> str:
         normalized_user_prompt = self._normalize_multi_view_user_prompt(user_prompt)
-        one_shot_prompt = self._multi_view_prompt_template_context()
         user_prompt_section = normalized_user_prompt or "无"
-        request_template = PromptTemplate.from_template(
-            (
+        one_shot_prompt = self._multi_view_prompt_template_context()
+        example_prompt = PromptTemplate.from_template("{example_text}")
+        request_template = FewShotPromptTemplate(
+            examples=[{"example_text": one_shot_prompt}],
+            example_prompt=example_prompt,
+            prefix=(
                 "任务：请反推当前珠宝图片的生成提示词，并集成给出一份新的生图提示词。"
                 "输出要求：参考 gpt image 2 的提示词编写规范，只输出中文纯文本，不要 Markdown，不要换行符，不要额外解释。"
-                "新提示词必须要求生成该珠宝的四个角度视角：正视图、左侧视90度、右侧视90度、背视图。"
-                "四视角必须明确写为：正视（需与原图一致）、左侧视（90度）、右侧视（90度）、背视。"
-                "正视图必须与原图完全一致，无需过多赘述；左侧视和右侧视必须清楚表达90度侧面结构和需要呈现的3D立体感；背视必须合理描述背面结构和镶嵌细节。"
-                "请先观察当前图片，反推珠宝类型、设计风格、造型、宝石颜色、金属颜色、整体结构、中心特征、分支数量和渲染风格，再把这些信息写入最终提示词。"
-                "下面是一份通用提示词模板，只作为结构上下文，仅供参考，最终生成提示词不需完全参照提示词模板的具体描述："
-                "{one_shot_prompt}"
-                " 用户补充提示词：{user_prompt}。"
+                "最终提示词必须使用中文标点断句，至少使用逗号、句号或分号分隔主体描述、四视角要求和整体风格，不能输出没有标点的一整段长句。"
+                "新提示词必须要求生成该珠宝的四个角度视角：正视图、左侧视45度、右侧视45度、背视图。"
+                "四视角必须明确写为：正视（需与原图一致）、左侧视（45度）、右侧视（45度）、背视。"
+                "正视图必须与原图完全一致，无需过多赘述；左侧视和右侧视必须基于参考图清楚表达45度侧面结构，；背视必须基于参考图合理描述，一般来说简单的镶嵌包裹描述即可。"
+                "请先观察当前图片，反推珠宝的设计提示词，再把这些信息写入最终提示词。"
+                # "下面是一份必须严格遵循的提示词模板。最终提示词必须忠于模板的字段顺序、四视角段落和描述粒度，逐句覆盖模板中的主体描述、背景、四个视角、整体结构和整体风格。"
+                "只能把模板中的省略内容替换为从当前图片反推出的具体信息，不得删减模板要求，不得缩写成摘要，不得改写成短句列表。"
+            ),
+            suffix=(
+                "用户补充提示词：{user_prompt}。"
                 "现在请基于当前图片和用户补充提示词，直接输出最终生图提示词。"
-            )
+            ),
+            input_variables=["user_prompt"],
+            example_separator="\n\n",
         )
-        return request_template.format(one_shot_prompt=one_shot_prompt, user_prompt=user_prompt_section)
+        return request_template.format(user_prompt=user_prompt_section)
 
     def _multi_view_prompt_template_context(self) -> str:
         template = PromptTemplate.from_template(
             (
-            "一枚高端珠宝设计图，展示一件{{jewelry_type}}。设计风格为{{design_style}}，采用{{shape_description}}造型。"
-            "珠宝由多个不规则形状的宝石组成，包括{{gem_color_1}}、{{gem_color_2}}、{{gem_color_3}}等颜色，镶嵌在{{metal_color}}的金属框架中。"
-            "整体呈{{overall_structure}}结构，中间有一个较大的{{central_feature}}，两侧各延伸出{{branch_count}}个分支。"
+            "展示一件...。设计风格为...，采用....造型。"
+            "生成基于参考图的4个标准视角（4视图），每个视图在几何上必须忠实于参考模型。"
             "背景为纯白色，突出珠宝设计。图片需包含四个视角的展示："
-            "1. 正视图：正面垂直视角，需与参照图一致保持不变。"
-            "2. 左侧视：从左侧90度角拍摄，展示珠宝的立体感和深度。清晰呈现{{overall_structure}}结构的侧面轮廓，各分支宝石的厚度和金属框架的侧面线条。光线均匀，突出珠宝的立体结构。"
-            "3. 右侧视：从右侧90度角拍摄，展示珠宝的另一侧立体感。与左侧视形成对称视角，清晰呈现{{overall_structure}}结构的侧面轮廓，各分支宝石的厚度和金属框架的侧面线条。光线均匀。"
-            "4. 背视：背面视角，展示珠宝的背面结构。清晰呈现{{overall_structure}}结构的背面金属框架，各分支宝石的背面镶嵌方式，以及金属框架的{{central_feature}}。光线均匀，突出背面设计细节。"
-            "整体风格：{{render_style}}，线条清晰，色彩鲜艳，构图简洁，背景纯白，突出珠宝设计的立体感和结构细节，细节清晰。"
+            "1. 正视图：正面垂直视角，绝对与参照图一致保持一成不变。"
+            "2. 左侧视：从左侧45度角拍摄，展示金属镶嵌的简约风格，自然主义工艺、艺术雕塑感，无需繁杂的镂空和雕刻等设计，.....。"
+            "3. 右侧视：从右侧45度角拍摄，展示珠宝的另一侧.....。"
+            "4. 背视：背面视角，展示珠宝的背面结构.....。"
+            "整体风格：.......，线条清晰，镶嵌金属简约风格。"
+            "无需生成文字解释。"
             ),
             template_format="mustache",
         )

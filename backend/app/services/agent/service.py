@@ -176,6 +176,7 @@ class AgentService:
         attachments: list[AgentAssetRef],
     ) -> tuple[str, AgentActionResponse | None, AgentMemoryProposal | None]:
         conversation = self._get_conversation(conversation_id, current_user=current_user)
+        self._ensure_conversation_active(conversation)
         normalized_attachments = self._normalize_asset_refs(attachments, current_user=current_user)
         active_attachments = self._resolve_workflow_active_attachments(
             conversation=conversation,
@@ -292,6 +293,7 @@ class AgentService:
         attachments: list[AgentAssetRef],
     ) -> AsyncIterator[tuple[str, object]]:
         conversation = self._get_conversation(conversation_id, current_user=current_user)
+        self._ensure_conversation_active(conversation)
         normalized_attachments = self._normalize_asset_refs(attachments, current_user=current_user)
         active_attachments = self._resolve_workflow_active_attachments(
             conversation=conversation,
@@ -537,6 +539,10 @@ class AgentService:
             action = session.get(AgentAction, action_id)
             if action is None or action.user_id != current_user.id:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent action not found.")
+            conversation = session.get(AgentConversation, action.conversation_id)
+            if conversation is None or conversation.user_id != current_user.id:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent conversation not found.")
+            self._ensure_conversation_active(conversation)
             if action.status not in {"draft", "failed"}:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该动作已提交或已取消。")
 
@@ -604,6 +610,10 @@ class AgentService:
     ) -> AgentUserMemoryResponse:
         now = datetime.now(timezone.utc)
         with SessionLocal() as session:
+            if source_conversation_id:
+                conversation = session.get(AgentConversation, source_conversation_id)
+                if conversation is None or conversation.user_id != current_user.id:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent conversation not found.")
             record = AgentUserMemory(
                 id=str(uuid4()),
                 user_id=current_user.id,
@@ -666,7 +676,14 @@ class AgentService:
             state = self._load_json(record.state_json) or {}
             resolved_action_id = action_id if action_id else state.get("last_action_id") if isinstance(state.get("last_action_id"), str) else None
             action_record = session.get(AgentAction, resolved_action_id) if resolved_action_id else None
-            if action_record is not None and action_record.user_id == current_user.id:
+            if resolved_action_id and (
+                action_record is None
+                or action_record.user_id != current_user.id
+                or action_record.conversation_id != conversation_id
+                or action_record.module_key != module_key
+            ):
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent action not found.")
+            if action_record is not None:
                 action_schema = self._action_to_schema(action_record)
                 source_refs = self._merge_asset_refs(
                     action_schema.source_assets,
@@ -3276,6 +3293,10 @@ class AgentService:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent conversation not found.")
             session.expunge(record)
         return record
+
+    def _ensure_conversation_active(self, conversation: AgentConversation) -> None:
+        if conversation.status != "active":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该 Agent 会话已结束。")
 
     def _create_message(
         self,

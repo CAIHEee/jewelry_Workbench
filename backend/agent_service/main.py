@@ -33,6 +33,7 @@ from app.services.agent_service import AgentService
 
 
 settings = get_settings()
+logger = logging.getLogger("agent_service.main")
 
 
 def _configure_agent_perf_logging() -> None:
@@ -151,7 +152,8 @@ async def stream_message(
         except HTTPException as exc:
             yield _sse("error", {"message": exc.detail, "status_code": exc.status_code})
         except Exception as exc:  # noqa: BLE001
-            yield _sse("error", {"message": str(exc), "status_code": 500})
+            logger.exception("Unhandled agent stream error for conversation_id=%s", conversation_id)
+            yield _sse("error", {"message": "Agent 回复失败，请稍后重试。", "status_code": 500})
 
     return StreamingResponse(
         stream(),

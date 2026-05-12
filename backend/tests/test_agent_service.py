@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -103,6 +104,28 @@ def test_design_stream_uses_visible_llm_delta(auth_client: TestClient, monkeypat
     assert detail["messages"][-1]["content"] == "最终规划回复不应该覆盖流式正文。"
 
 
+def test_agent_stream_hides_unhandled_exception_detail(auth_client: TestClient, monkeypatch) -> None:
+    async def fail_stream(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError("secret backend path /tmp/internal-token")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(AgentService, "stream_user_message", fail_stream)
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "workflow"})
+    conversation_id = created.json()["id"]
+
+    response = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={"content": "你好", "attachments": []},
+    )
+
+    assert response.status_code == 200
+    assert "event: error" in response.text
+    assert "Agent 回复失败，请稍后重试。" in response.text
+    assert "secret backend path" not in response.text
+    assert "/tmp/internal-token" not in response.text
+
+
 def test_agent_memory_crud(auth_client: TestClient) -> None:
     agent_client = _agent_client(auth_client)
     created = agent_client.post(
@@ -118,6 +141,21 @@ def test_agent_memory_crud(auth_client: TestClient) -> None:
 
     deleted = agent_client.delete(f"/agent-api/v1/memories/{memory_id}")
     assert deleted.status_code == 204
+
+
+def test_agent_memory_rejects_unknown_source_conversation(auth_client: TestClient) -> None:
+    agent_client = _agent_client(auth_client)
+
+    created = agent_client.post(
+        "/agent-api/v1/memories",
+        json={
+            "content": "偏好低饱和复古风格",
+            "memory_type": "preference",
+            "source_conversation_id": "00000000-0000-0000-0000-000000000000",
+        },
+    )
+
+    assert created.status_code == 404
 
 
 def test_agent_end_conversation_does_not_call_llm(auth_client: TestClient, monkeypatch) -> None:
@@ -140,6 +178,23 @@ def test_agent_end_conversation_does_not_call_llm(auth_client: TestClient, monke
     assert "已结束" in body["messages"][-1]["content"]
     assert body["conversation"]["current_stage"] == "ended"
     assert body["conversation"]["status"] == "ended"
+
+
+def test_agent_ended_conversation_rejects_new_messages(auth_client: TestClient) -> None:
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "workflow"})
+    conversation_id = created.json()["id"]
+    ended = agent_client.post(f"/agent-api/v1/conversations/{conversation_id}/end")
+    assert ended.status_code == 200
+
+    response = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={"content": "继续生成多视图", "attachments": []},
+    )
+
+    assert response.status_code == 200
+    assert "event: error" in response.text
+    assert "该 Agent 会话已结束。" in response.text
 
 
 def test_design_mode_with_gemstone_image_creates_gemstone_action_and_state(auth_client: TestClient) -> None:
@@ -1586,6 +1641,152 @@ def test_agent_result_event_preserves_action_sources(auth_client: TestClient, mo
     generation_message = next(item for item in detail["messages"] if (item.get("event") or {}).get("type") == "generation_result")
     assert generation_message["event"]["source_assets"][0]["storage_url"] == "https://example.com/multi-view.png"
     assert detail["conversation"]["state"]["generation_source_assets_by_module"]["grayscale_relief"][0]["storage_url"] == "https://example.com/multi-view.png"
+
+
+def test_non_editable_action_prompt_is_normalized_on_confirm(auth_client: TestClient, monkeypatch) -> None:
+    async def fail_if_llm_called(self, *, conversation, current_user, content, attachments, memories):  # noqa: ANN001, ARG001
+        raise AssertionError("Clear workflow routing should not call the LLM.")
+
+    def fake_enqueue_job(self, **kwargs):  # noqa: ANN001
+        return SimpleNamespace(job_id="job-normalized", status="queued", message="queued")
+
+    monkeypatch.setattr(AgentService, "_call_llm_or_fallback", fail_if_llm_called)
+    monkeypatch.setattr("app.services.job_queue_service.JobQueueService.enqueue_job", fake_enqueue_job)
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "workflow"})
+    conversation_id = created.json()["id"]
+
+    response = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "生成多视图",
+            "attachments": [
+                {"name": "realistic.png", "storage_url": "https://example.com/realistic.png"},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    action = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()["actions"][0]
+
+    accepted = agent_client.post(
+        f"/agent-api/v1/actions/{action['id']}/confirm",
+        json={
+            "prompt": "恶意覆盖不可编辑提示词",
+            "params": action["params"],
+            "source_assets": action["source_assets"],
+            "source_image_urls": action["source_image_urls"],
+        },
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.json()["action"]["prompt"] == MULTI_VIEW_PROMPT
+
+
+def test_ended_conversation_rejects_action_confirm(auth_client: TestClient, monkeypatch) -> None:
+    async def fail_if_llm_called(self, *, conversation, current_user, content, attachments, memories):  # noqa: ANN001, ARG001
+        raise AssertionError("Clear workflow routing should not call the LLM.")
+
+    monkeypatch.setattr(AgentService, "_call_llm_or_fallback", fail_if_llm_called)
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "workflow"})
+    conversation_id = created.json()["id"]
+
+    response = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "生成多视图",
+            "attachments": [
+                {"name": "realistic.png", "storage_url": "https://example.com/realistic.png"},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    action = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()["actions"][0]
+    ended = agent_client.post(f"/agent-api/v1/conversations/{conversation_id}/end")
+    assert ended.status_code == 200
+
+    accepted = agent_client.post(
+        f"/agent-api/v1/actions/{action['id']}/confirm",
+        json={
+            "prompt": action["prompt"],
+            "params": action["params"],
+            "source_assets": action["source_assets"],
+            "source_image_urls": action["source_image_urls"],
+        },
+    )
+
+    assert accepted.status_code == 400
+    assert accepted.json()["detail"] == "该 Agent 会话已结束。"
+
+
+def test_generation_result_rejects_action_from_other_conversation(auth_client: TestClient, monkeypatch) -> None:
+    async def fail_if_llm_called(self, *, conversation, current_user, content, attachments, memories):  # noqa: ANN001, ARG001
+        raise AssertionError("Clear workflow routing should not call the LLM.")
+
+    monkeypatch.setattr(AgentService, "_call_llm_or_fallback", fail_if_llm_called)
+    agent_client = _agent_client(auth_client)
+    first = agent_client.post("/agent-api/v1/conversations", json={"mode": "workflow"})
+    second = agent_client.post("/agent-api/v1/conversations", json={"mode": "workflow"})
+    first_id = first.json()["id"]
+    second_id = second.json()["id"]
+
+    response = agent_client.post(
+        f"/agent-api/v1/conversations/{first_id}/messages/stream",
+        json={
+            "content": "生成灰度图",
+            "attachments": [
+                {"name": "multi-view.png", "storage_url": "https://example.com/multi-view.png"},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    action = agent_client.get(f"/agent-api/v1/conversations/{first_id}").json()["actions"][0]
+
+    registered = agent_client.post(
+        f"/agent-api/v1/conversations/{second_id}/generation-result",
+        json={
+            "action_id": action["id"],
+            "module_key": "grayscale_relief",
+            "image_url": "https://example.com/grayscale-result.png",
+            "name": "灰度结果",
+        },
+    )
+
+    assert registered.status_code == 404
+
+
+def test_generation_result_rejects_action_module_mismatch(auth_client: TestClient, monkeypatch) -> None:
+    async def fail_if_llm_called(self, *, conversation, current_user, content, attachments, memories):  # noqa: ANN001, ARG001
+        raise AssertionError("Clear workflow routing should not call the LLM.")
+
+    monkeypatch.setattr(AgentService, "_call_llm_or_fallback", fail_if_llm_called)
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "workflow"})
+    conversation_id = created.json()["id"]
+
+    response = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "生成灰度图",
+            "attachments": [
+                {"name": "multi-view.png", "storage_url": "https://example.com/multi-view.png"},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    action = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()["actions"][0]
+
+    registered = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/generation-result",
+        json={
+            "action_id": action["id"],
+            "module_key": "multi_view",
+            "image_url": "https://example.com/multi-view-result.png",
+            "name": "多视图结果",
+        },
+    )
+
+    assert registered.status_code == 404
 
 
 def test_regenerate_grayscale_reuses_original_module_source(auth_client: TestClient, monkeypatch) -> None:
