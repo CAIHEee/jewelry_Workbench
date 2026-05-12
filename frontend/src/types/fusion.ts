@@ -1,6 +1,6 @@
 export type FusionMode = "balanced" | "style_first" | "structure_first" | "detail_enhanced";
 
-export type ProviderType = "flux" | "gemini" | "apiyi" | "wuyin" | "aiapis" | "dmxapi";
+export type ProviderType = "flux" | "gemini" | "apiyi" | "wuyin";
 
 export interface ModelDefinition {
   id: string;

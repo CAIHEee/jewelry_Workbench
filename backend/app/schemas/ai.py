@@ -15,8 +15,6 @@ class ProviderType(str, Enum):
     gemini = "gemini"
     apiyi = "apiyi"
     wuyin = "wuyin"
-    aiapis = "aiapis"
-    dmxapi = "dmxapi"
 
 
 class FeatureDefinition(BaseModel):

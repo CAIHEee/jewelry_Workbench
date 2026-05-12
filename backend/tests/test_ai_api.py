@@ -24,9 +24,7 @@ def test_model_catalog_exposes_expected_models(client: TestClient) -> None:
     }
     assert "gpt-image-2-all-apiyi" in model_ids
     assert "multi-view-few-shot-apiyi" in model_ids
-    assert "gpt-image-2-aiapis" not in model_ids
     assert "gpt-image-2-wuyin" not in model_ids
-    assert "gpt-image-2-dmxapi" not in model_ids
     assert "gemini-3.1-flash-image-preview" in model_ids
     assert "gemini-3-pro-image-preview" not in model_ids
     assert "flux1-dev" not in model_ids
