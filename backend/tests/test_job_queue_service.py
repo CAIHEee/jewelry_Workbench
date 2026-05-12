@@ -1,8 +1,11 @@
+import asyncio
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
 
+from app.api.v1.routes import ai_jobs
 from app.models.generation_job import GenerationJob
+from app.models.user import User
 from app.services.job_queue_service import JobQueueService
 
 
@@ -71,3 +74,40 @@ def test_job_error_formats_upstream_chinese_credit_message_as_balance_error() ->
     )
 
     assert service._format_exception_message(error) == "当前所选 AI 服务余额不足，请前往对应中转平台充值后再试。"
+
+
+def test_reference_job_ignores_client_supplied_feature(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_enqueue_job(self, **kwargs):  # noqa: ANN001
+        captured.update(kwargs)
+        return {
+            "job_id": "job-image-edit",
+            "status": "queued",
+            "feature": kwargs["feature_key"],
+            "message": "queued",
+        }
+
+    monkeypatch.setattr(ai_jobs.job_service, "ensure_can_enqueue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ai_jobs.job_service, "enqueue_job", fake_enqueue_job.__get__(ai_jobs.job_service))
+
+    result = asyncio.run(
+        ai_jobs.enqueue_reference_image_transform(
+            image=None,
+            prompt="生成多视图",
+            model="gpt-image-2-all-apiyi",
+            feature="multi_view",
+            source_image_url="local://source.png",
+            source_image_name="source.png",
+            negative_prompt=None,
+            strength=0.75,
+            image_size="1K",
+            batch_size=1,
+            batch_index=0,
+            current_user=User(id="user-1", username="tester", role="user"),
+        )
+    )
+
+    assert result["feature"] == "image_edit"
+    assert captured["feature_key"] == "image_edit"
+    assert captured["request_payload"]["metadata"]["feature"] == "image_edit"

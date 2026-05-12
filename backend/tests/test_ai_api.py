@@ -31,7 +31,7 @@ def test_model_catalog_exposes_expected_models(client: TestClient) -> None:
     assert "gemini-3-pro-image-preview" not in model_ids
     assert "flux1-dev" not in model_ids
     assert "flux-kontext-pro" not in model_ids
-    assert models["gpt-image-2-all-apiyi"]["supports_text_to_image"] is True
+    assert models["gpt-image-2-all-apiyi"]["supports_text_to_image"] is False
     assert models["gpt-image-2-all-apiyi"]["supports_multi_image_fusion"] is True
     assert models["gpt-image-2-all-apiyi"]["supports_reference_images"] is True
     assert models["gpt-image-2-all-apiyi"]["provider"] == "apiyi"
@@ -45,29 +45,6 @@ def test_model_catalog_exposes_expected_models(client: TestClient) -> None:
     assert models["gemini-3.1-flash-image-preview"]["supports_multi_image_fusion"] is True
     assert models["gemini-3.1-flash-image-preview"]["supports_reference_images"] is True
     assert models["gemini-3.1-flash-image-preview"]["label"].startswith("APIYI")
-
-
-def test_extracts_apiyi_chat_completion_image_url() -> None:
-    service = AIService()
-    data = {
-        "id": "chatcmpl-test",
-        "choices": [
-            {
-                "message": {
-                    "content": "生成完成：![result](https://cdn.example.com/generated.png)",
-                }
-            }
-        ],
-    }
-
-    assert service._extract_chat_completion_image_url(data) == "https://cdn.example.com/generated.png"
-
-
-def test_extracts_apiyi_chat_completion_data_b64_json() -> None:
-    service = AIService()
-    data = {"data": [{"b64_json": "ZmFrZS1pbWFnZQ=="}]}
-
-    assert service._extract_chat_completion_image_url(data) == "data:image/png;base64,ZmFrZS1pbWFnZQ=="
 
 
 def test_extracts_openai_payload_data_url_b64_json() -> None:
@@ -94,7 +71,6 @@ def test_apiyi_reference_prompt_uses_qwen_output_without_old_chain() -> None:
     prompt = service._build_apiyi_reference_prompt(metadata)
 
     assert prompt == "Qwen 反推后的多视图提示词"
-    assert service._build_apiyi_reference_system_prompt(metadata) is None
 
 
 def test_builds_qwen_multi_view_prompt_request_text() -> None:

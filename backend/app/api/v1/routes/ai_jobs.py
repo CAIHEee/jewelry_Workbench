@@ -155,7 +155,7 @@ async def enqueue_reference_image_transform(
     if batch_index < 0 or batch_index >= batch_size:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="批量任务序号无效。")
     return await _enqueue_reference_job(
-        feature_key=feature,
+        feature_key="image_edit",
         image=image,
         images=None,
         prompt=prompt,

@@ -133,8 +133,6 @@ class AIService:
 
             if model.provider == ProviderType.aiapis:
                 return await self._generate_with_aiapis_gpt_image2(request=request, model=model)
-            if model.provider == ProviderType.apiyi:
-                return await self._generate_with_apiyi_gpt_image2_all(request=request, model=model)
             if model.provider == ProviderType.wuyin:
                 return await self._generate_with_wuyin_gpt_image2(request=request, model=model)
 
@@ -795,54 +793,6 @@ class AIService:
         if model.id == "gemini-3.1-flash-image-preview":
             return f"Nano Banana 2 image generation via {platform_label}"
         return f"{model.label} via {platform_label}"
-
-    async def _generate_with_apiyi_gpt_image2_all(
-        self,
-        *,
-        request: TextToImageRequest,
-        model: TTAPIModelConfig,
-    ) -> GenerationResult:
-        data = await self._post_apiyi_gpt_image2_chat(
-            model=model,
-            prompt=request.prompt,
-            files=[],
-        )
-        upstream_image_url = self._extract_chat_completion_image_url(data)
-        stored_asset = await self._store_generated_asset(
-            image_url=upstream_image_url,
-            kind="text_to_image",
-            model=model.id,
-        )
-        result = GenerationResult(
-            job_id=self._extract_job_id(data),
-            status="completed" if stored_asset["access_url"] else "failed",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            message="Image generation completed." if stored_asset["access_url"] else "Image generation returned no asset.",
-            raw_response=data,
-        )
-        if result.image_url:
-            self._persist_history(
-                kind="text_to_image",
-                title=self._history_title_for_kind("text_to_image"),
-                model_id=model.id,
-                provider=model.provider.value,
-                status=result.status,
-                prompt=request.prompt,
-                job_id=result.job_id,
-                image_url=result.image_url,
-                storage_url=stored_asset["storage_url"],
-                metadata={
-                    "upstream_platform": "apiyi",
-                    "upstream_api": "chat_completions",
-                    "upstream_model": model.upstream_model_id,
-                    "aspect_ratio": request.aspect_ratio,
-                    "size": request.size,
-                    **stored_asset["metadata"],
-                },
-            )
-        return result
 
     async def _generate_with_wuyin_gpt_image2(
         self,
@@ -2218,44 +2168,6 @@ class AIService:
             )
         return self._handle_response(response)
 
-    async def _post_apiyi_gpt_image2_chat(
-        self,
-        *,
-        model: TTAPIModelConfig,
-        prompt: str,
-        files: list[UploadFile],
-        system_prompt: str | None = None,
-    ) -> dict[str, Any]:
-        content: str | list[dict[str, Any]]
-        if files:
-            content_parts: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-            for index, file in enumerate(files):
-                content_parts.append(
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": await self._file_to_data_url(file)},
-                    }
-                )
-            content = content_parts
-        else:
-            content = prompt
-
-        messages: list[dict[str, object]] = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": content})
-
-        return await self._post_json_with_bearer(
-            base_url=self.settings.apiyi_openai_base_url,
-            path="/chat/completions",
-            api_key=self._require_apiyi_api_key(),
-            payload={
-                "model": model.upstream_model_id,
-                "messages": messages,
-            },
-            timeout=self.settings.apiyi_timeout_seconds,
-        )
-
     async def _post_apiyi_gpt_image2_vip_edit(
         self,
         *,
@@ -2450,9 +2362,6 @@ class AIService:
 
     def _build_apiyi_reference_prompt(self, metadata: ReferenceImageRequestMetadata) -> str:
         return metadata.prompt.strip()
-
-    def _build_apiyi_reference_system_prompt(self, metadata: ReferenceImageRequestMetadata) -> str | None:
-        return None
 
     async def _post_json_with_bearer_base_url(
         self,
@@ -2855,21 +2764,6 @@ class AIService:
                     if isinstance(value, str):
                         return value
         return None
-
-    def _extract_chat_completion_image_url(self, data: dict[str, Any]) -> str | None:
-        content = self._extract_chat_completion_content(data)
-        if not content:
-            return self._extract_image_url(data)
-
-        markdown_match = re.search(r"!\[[^\]]*]\((?P<url>[^)]+)\)", content)
-        if markdown_match:
-            return markdown_match.group("url").strip()
-
-        url_match = re.search(r"(https?://[^\s)'\"<>]+|data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+)", content)
-        if url_match:
-            return url_match.group(1).strip()
-
-        return self._extract_image_url(data)
 
     def _extract_chat_completion_content(self, data: dict[str, Any]) -> str | None:
         choices = data.get("choices")
