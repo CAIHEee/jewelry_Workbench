@@ -13,7 +13,6 @@ import type { GenerationJobProgress, GenerationResult } from "../types/fusion";
 import { buildGenerationJobProgress } from "../utils/jobProgress";
 import type { WorkspaceRun } from "../types/workspace";
 import type { ModuleHistoryEntry } from "../utils/history";
-import { isNotMultiViewOnlyModel } from "../utils/modelFilters";
 
 interface TextToImagePageProps {
   onRecordRun: (run: Omit<WorkspaceRun, "id" | "createdAt">) => void;
@@ -38,7 +37,7 @@ const jobProgressLabels = {
 };
 
 export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: TextToImagePageProps) {
-  const { models, error: modelError, defaultModelId } = useModelCatalog((model) => model.supports_text_to_image && isNotMultiViewOnlyModel(model));
+  const { models, error: modelError, defaultModelId } = useModelCatalog((model) => model.supports_text_to_image);
   const [prompt, setPrompt] = useState("");
   const resolvedDefaultModelId = useMemo(
     () => models.find((item) => item.id === preferredTextToImageModelId)?.id ?? defaultModelId,

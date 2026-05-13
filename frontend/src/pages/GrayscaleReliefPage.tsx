@@ -13,7 +13,6 @@ import type { AssetItem } from "../types/mockData";
 import type { WorkspaceRun } from "../types/workspace";
 import { buildGenerationJobProgress } from "../utils/jobProgress";
 import type { ModuleHistoryEntry } from "../utils/history";
-import { isNotMultiViewOnlyModel } from "../utils/modelFilters";
 
 const templates = getPromptTemplatesByModule("grayscale-relief");
 const defaultPrompt =
@@ -42,7 +41,7 @@ interface GrayscaleReliefPageProps {
 }
 
 export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDeleteHistory }: GrayscaleReliefPageProps) {
-  const { models, error: modelError, defaultModelId } = useModelCatalog((model) => model.supports_reference_images && isNotMultiViewOnlyModel(model));
+  const { models, error: modelError, defaultModelId } = useModelCatalog((model) => model.supports_reference_images);
   const grayscaleDefaultModelId = useMemo(
     () => models.find((item) => item.id === preferredGrayscaleModelId)?.id ?? defaultModelId,
     [defaultModelId, models],

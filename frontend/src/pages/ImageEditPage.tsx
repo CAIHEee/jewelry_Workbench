@@ -13,7 +13,6 @@ import type { AssetItem } from "../types/mockData";
 import type { WorkspaceRun } from "../types/workspace";
 import { buildGenerationJobProgress } from "../utils/jobProgress";
 import type { ModuleHistoryEntry } from "../utils/history";
-import { isNotMultiViewOnlyModel } from "../utils/modelFilters";
 
 const templates = getPromptTemplatesByModule("image-edit");
 const defaultPrompt =
@@ -45,7 +44,7 @@ interface ImageEditPageProps {
 }
 
 export function ImageEditPage({ assetItems, onRecordRun: _onRecordRun, onRefreshHistory, pageRuns, onDeleteHistory }: ImageEditPageProps) {
-  const { models, error: modelError, defaultModelId } = useModelCatalog((model) => model.supports_reference_images && isNotMultiViewOnlyModel(model));
+  const { models, error: modelError, defaultModelId } = useModelCatalog((model) => model.supports_reference_images);
   const imageEditDefaultModelId = useMemo(
     () => models.find((item) => item.id === preferredImageEditModelId)?.id ?? defaultModelId,
     [defaultModelId, models],

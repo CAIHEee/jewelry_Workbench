@@ -15,7 +15,6 @@ import type { AssetItem } from "../types/mockData";
 import type { WorkspaceRun } from "../types/workspace";
 import { buildGenerationJobProgress } from "../utils/jobProgress";
 import type { ModuleHistoryEntry } from "../utils/history";
-import { isNotMultiViewOnlyModel } from "../utils/modelFilters";
 
 const modes: Array<{ value: FusionMode; label: string; description: string }> = [
   { value: "balanced", label: "均衡融合", description: "尽量平衡保留各图核心元素" },
@@ -47,7 +46,7 @@ interface FusionStudioProps {
 }
 
 export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistory }: FusionStudioProps) {
-  const { models, error: modelError, defaultModelId } = useModelCatalog((item) => item.supports_multi_image_fusion && isNotMultiViewOnlyModel(item));
+  const { models, error: modelError, defaultModelId } = useModelCatalog((item) => item.supports_multi_image_fusion);
   const [files, setFiles] = useState<File[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<AssetItem[]>([]);
   const [prompt, setPrompt] = useState("");

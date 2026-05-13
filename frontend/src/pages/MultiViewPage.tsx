@@ -33,7 +33,6 @@ const progressPhases = [
 const preferredMultiViewModelId = "gpt-image-2-all-apiyi";
 const allowedMultiViewModelIds = new Set([
   "gpt-image-2-all-apiyi",
-  "multi-view-few-shot-apiyi",
   "gemini-3-pro-image-preview-apiyi",
   "gpt-image-2-closeai",
 ]);
