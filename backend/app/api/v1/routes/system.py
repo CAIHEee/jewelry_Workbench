@@ -3,6 +3,7 @@ from pathlib import Path
 from fastapi import APIRouter
 
 from app.core.config import get_settings
+from app.services.ai import MODEL_CATALOG
 
 
 router = APIRouter()
@@ -15,7 +16,7 @@ def system_summary() -> dict[str, object]:
     return {
         "name": settings.app_name,
         "environment": settings.app_env,
-        "providers": [settings.ai_default_provider],
+        "providers": sorted({model.provider.value for model in MODEL_CATALOG.values()}),
         "storage": {
             "provider": "local_disk",
             "path": LOCAL_STORAGE_PATH,

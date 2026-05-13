@@ -5,8 +5,9 @@ from fastapi import UploadFile
 from fastapi.testclient import TestClient
 
 from app.api.v1.routes.ai import cache_service
-from app.schemas.ai import ReferenceImageRequestMetadata, TextToImageRequest
+from app.schemas.ai import GenerationResult, ReferenceImageRequestMetadata, TextToImageRequest
 from app.services.ai_service import AIService
+from app.models.user import User
 
 
 def test_model_catalog_exposes_expected_models(client: TestClient) -> None:
@@ -19,13 +20,11 @@ def test_model_catalog_exposes_expected_models(client: TestClient) -> None:
     model_ids = set(models)
     assert model_ids == {
         "gpt-image-2-all-apiyi",
-        "multi-view-few-shot-apiyi",
         "gemini-3-pro-image-preview-apiyi",
         "gpt-image-2-closeai",
         "gemini-3.1-flash-image-preview",
     }
     assert "gpt-image-2-all-apiyi" in model_ids
-    assert "multi-view-few-shot-apiyi" in model_ids
     assert "gemini-3-pro-image-preview-apiyi" in model_ids
     assert "gpt-image-2-closeai" in model_ids
     assert "gpt-image-2-wuyin" not in model_ids
@@ -38,11 +37,6 @@ def test_model_catalog_exposes_expected_models(client: TestClient) -> None:
     assert models["gpt-image-2-all-apiyi"]["supports_reference_images"] is True
     assert models["gpt-image-2-all-apiyi"]["provider"] == "apiyi"
     assert models["gpt-image-2-all-apiyi"]["label"].startswith("APIYI")
-    assert models["multi-view-few-shot-apiyi"]["supports_text_to_image"] is False
-    assert models["multi-view-few-shot-apiyi"]["supports_multi_image_fusion"] is False
-    assert models["multi-view-few-shot-apiyi"]["supports_reference_images"] is True
-    assert models["multi-view-few-shot-apiyi"]["provider"] == "apiyi"
-    assert models["multi-view-few-shot-apiyi"]["label"].startswith("APIYI")
     assert models["gemini-3-pro-image-preview-apiyi"]["supports_text_to_image"] is True
     assert models["gemini-3-pro-image-preview-apiyi"]["supports_multi_image_fusion"] is True
     assert models["gemini-3-pro-image-preview-apiyi"]["supports_reference_images"] is True
@@ -239,9 +233,59 @@ def test_closeai_gpt_image2_edit_payload_uses_closeai_config(monkeypatch) -> Non
         "model": "gpt-image-2",
         "prompt": "转写实",
         "size": "2048x2048",
-        "response_format": "url",
     }
+    assert "response_format" not in data
+    files = captured["files"]
+    assert isinstance(files, list)
+    assert [item[0] for item in files] == ["image[]"]
     assert captured["api_key"] == "test-closeai-key"
+
+
+def test_closeai_multi_view_uses_qwen_prompt_stages(monkeypatch) -> None:
+    service = AIService()
+    stages: list[str] = []
+    captured: dict[str, object] = {}
+
+    async def fake_generate_multi_view_with_qwen_prompt(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+        callback = kwargs["stage_callback"]
+        callback("qwen_prompt")
+        callback("image_generation")
+        return GenerationResult(
+            status="completed",
+            provider=service._get_model_or_404("gpt-image-2-closeai").provider,
+            model="gpt-image-2-closeai",
+            image_url="/api/v1/assets/content?storage_url=local://closeai-result.png",
+            revised_prompt="Qwen 反推后的 CloseAI 多视图提示词",
+            message="Reference image transform completed.",
+        )
+
+    monkeypatch.setattr(service, "_generate_multi_view_with_qwen_prompt", fake_generate_multi_view_with_qwen_prompt)
+
+    async def run_request() -> None:
+        upload = UploadFile(filename="source.png", file=BytesIO(b"source"), headers={"content-type": "image/png"})
+        try:
+            await service.generate_multi_view(
+                file=upload,
+                metadata=ReferenceImageRequestMetadata(
+                    model="gpt-image-2-closeai",
+                    prompt="默认多视图规则",
+                    feature="multi_view",
+                    filename="source.png",
+                    image_count=1,
+                ),
+                current_user=User(id="00000000-0000-0000-0000-000000000001", username="root", display_name="root"),
+                stage_callback=stages.append,
+            )
+        finally:
+            upload.file.close()
+
+    asyncio.run(run_request())
+
+    assert stages == ["qwen_prompt", "image_generation"]
+    metadata = captured["metadata"]
+    assert isinstance(metadata, ReferenceImageRequestMetadata)
+    assert metadata.model == "gpt-image-2-closeai"
 
 
 def test_apiyi_gemini_uses_upstream_model_id(monkeypatch) -> None:

@@ -36,7 +36,7 @@ from app.schemas.ai import (
     TextToImageRequest,
 )
 from app.schemas.history import HistoryRecordCreate
-from app.services.ai import MODEL_CATALOG, TTAPIModelConfig
+from app.services.ai import MODEL_CATALOG, ImageModelConfig
 from app.services.asset_service import AssetService
 from app.services.history_service import HistoryService
 from app.services.storage_service import StorageService
@@ -129,17 +129,17 @@ class AIService:
                     detail=f"Model {request.model} does not support text-to-image generation.",
                 )
 
-            if model.provider == ProviderType.wuyin:
-                return await self._generate_with_wuyin_gpt_image2(request=request, model=model)
-
             if self._use_apiyi():
                 if model.provider == ProviderType.gemini:
                     return await self._generate_with_gemini_apiyi(request=request, model=model)
-                return await self._generate_with_flux_apiyi(request=request, model=model)
+                return await self._generate_with_openai_image_apiyi(request=request, model=model)
 
             if model.provider == ProviderType.gemini:
                 return await self._generate_with_gemini(request=request, model=model)
-            return await self._generate_with_flux(request=request, model=model)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Model {request.model} is not available on TTAPI upstream.",
+            )
         finally:
             _job_stage_callback.reset(stage_token)
             _request_user.reset(context_token)
@@ -213,17 +213,18 @@ class AIService:
                 result = await self._fuse_with_apiyi_gpt_image2_all(files=submit_files, metadata=metadata, model=model)
             elif model.provider == ProviderType.closeai:
                 result = await self._fuse_with_closeai_gpt_image2(files=submit_files, metadata=metadata, model=model)
-            elif model.provider == ProviderType.wuyin:
-                result = await self._fuse_with_wuyin_gpt_image2(metadata=metadata, model=model)
             elif self._use_apiyi():
                 if model.provider == ProviderType.gemini:
                     result = await self._fuse_with_gemini_apiyi(files=submit_files, metadata=metadata, model=model)
                 else:
-                    result = await self._fuse_with_flux_apiyi(files=submit_files, metadata=metadata, model=model)
+                    result = await self._fuse_with_openai_image_apiyi(files=submit_files, metadata=metadata, model=model)
             elif model.provider == ProviderType.gemini:
                 result = await self._fuse_with_gemini(files=submit_files, metadata=metadata, model=model)
             else:
-                result = await self._fuse_with_flux(files=submit_files, metadata=metadata, model=model)
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Model {metadata.model} is not available on TTAPI upstream.",
+                )
 
             return FusionJobAccepted(
                 job_id=result.job_id,
@@ -361,17 +362,18 @@ class AIService:
                 return await self._transform_with_apiyi_gpt_image2_all(files=submit_files, metadata=metadata, model=model)
             if model.provider == ProviderType.closeai:
                 return await self._transform_with_closeai_gpt_image2(files=submit_files, metadata=metadata, model=model)
-            if model.provider == ProviderType.wuyin:
-                return await self._transform_with_wuyin_gpt_image2(metadata=metadata, model=model)
 
             if self._use_apiyi():
                 if model.provider == ProviderType.gemini:
                     return await self._transform_with_gemini_apiyi(files=submit_files, metadata=metadata, model=model)
-                return await self._transform_with_flux_apiyi(files=submit_files, metadata=metadata, model=model)
+                return await self._transform_with_openai_image_apiyi(files=submit_files, metadata=metadata, model=model)
 
             if model.provider == ProviderType.gemini:
                 return await self._transform_with_gemini(files=submit_files, metadata=metadata, model=model)
-            return await self._transform_with_flux(files=submit_files, metadata=metadata, model=model)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Model {metadata.model} is not available on TTAPI upstream.",
+            )
         finally:
             _job_stage_callback.reset(stage_token)
             _request_user.reset(context_token)
@@ -390,21 +392,9 @@ class AIService:
         if metadata.feature != "multi_view":
             metadata = metadata.model_copy(update={"feature": "multi_view"})
 
-        # 使用 few-shot 模型时，走专用流程
-        if metadata.model == "multi-view-few-shot-apiyi":
-            return await self._generate_multi_view_with_few_shot_context(
-                file=file,
-                files=files,
-                metadata=metadata,
-                current_user=current_user,
-                source_image_url=source_image_url,
-                source_image_urls=source_image_urls,
-                stage_callback=stage_callback,
-            )
-
-        # 使用 gpt-image-2-all-apiyi 模型时，加入 5 张固定参考图
-        if metadata.model == "gpt-image-2-all-apiyi":
-            return await self._generate_multi_view_with_apiyi_gpt_image2_all_with_context(
+        # 多视图统一走 Qwen 反推提示词，再交给 image2 图生图链路
+        if metadata.model in {"gpt-image-2-all-apiyi", "gpt-image-2-closeai"}:
+            return await self._generate_multi_view_with_qwen_prompt(
                 file=file,
                 files=files,
                 metadata=metadata,
@@ -432,7 +422,7 @@ class AIService:
             stage_callback=stage_callback,
         )
 
-    async def _generate_multi_view_with_few_shot_context(
+    async def _generate_multi_view_with_qwen_prompt(
         self,
         *,
         file: UploadFile | None,
@@ -443,152 +433,10 @@ class AIService:
         source_image_urls: list[str] | None = None,
         stage_callback: Callable[[str], None] | None = None,
     ) -> GenerationResult:
-        """使用 Qwen3-VL 反推提示词后，通过 APIYI images/edits 生成多视图。"""
+        """使用 Qwen3-VL 反推提示词，再用当前 image2 模型生成多视图。"""
         context_token = _request_user.set(current_user)
         stage_token = _job_stage_callback.set(stage_callback)
         model = self._get_model_or_404(metadata.model)
-
-        # 确定用户输入的原图
-        input_file = files[0] if files else file
-        primary_source_url = source_image_urls[0] if source_image_urls else source_image_url
-        if input_file is None and source_image_urls:
-            input_file = await self._build_upload_file_from_url(
-                source_image_urls[0],
-                metadata.filename or "input-image.png",
-            )
-        if input_file is None and source_image_url:
-            input_file = await self._build_upload_file_from_url(
-                source_image_url,
-                metadata.filename or "input-image.png",
-            )
-        if input_file is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="需要上传一张原图作为多视图生成的主体",
-            )
-        metadata = self._with_primary_multi_view_source(metadata, primary_source_url)
-
-        # 加载固定的 10 张 train 参考图
-        train_dir = Path(__file__).resolve().parents[4] / "multi_picture" / "train"
-        train_files = sorted(train_dir.glob("*"), key=lambda p: self._sort_key_for_train_files(p))
-        if len(train_files) < 10:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"train 目录需要 10 张参考图，但只找到 {len(train_files)} 张",
-            )
-
-        # 构建 multipart 文件列表：先 10 张参考图，最后 1 张用户原图
-        multipart_files: list[tuple[str, tuple[str, bytes, str]]] = []
-        
-        # 添加 10 张 train 参考图
-        for index, train_path in enumerate(train_files[:10]):
-            content = await asyncio.to_thread(train_path.read_bytes)
-            suffix = train_path.suffix.lower()
-            mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
-            mime_type = mime_map.get(suffix, "image/png")
-            multipart_files.append(("image", (train_path.name, content, mime_type)))
-
-        # 添加用户原图（最后一张）
-        input_content = await input_file.read()
-        await input_file.seek(0)
-        input_mime = input_file.content_type or "image/png"
-        multipart_files.append(("image", (input_file.filename or "input-image.png", input_content, input_mime)))
-
-        prompt = await self._build_qwen_multi_view_prompt(input_file=input_file, metadata=metadata)
-
-        try:
-            # 调用 APIYI /v1/images/edits 接口（multipart/form-data）
-            data = await self._post_multipart_with_bearer_base_url(
-                base_url=self.settings.apiyi_openai_base_url,
-                path="/images/edits",
-                api_key=self._require_apiyi_api_key(),
-                data={
-                    "model": model.upstream_model_id,
-                    "prompt": prompt,
-                    "size": "2048x2048",
-                    "n": "1",
-                },
-                files=multipart_files,
-                timeout=self.settings.apiyi_timeout_seconds,
-            )
-
-            # 从响应中提取 b64_json（纯 base64，无前缀）
-            image_data = data.get("data", [{}])[0] if data.get("data") else {}
-            b64_json = image_data.get("b64_json")
-            if not b64_json:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="API 返回数据中没有 b64_json 字段",
-                )
-
-            # 保存生成的图片
-            stored_asset = await self._store_generated_binary_asset(
-                image_bytes=base64.b64decode(b64_json),
-                content_type="image/png",
-                kind="multi_view",
-                model=model.id,
-                preferred_name=metadata.filename or "multi-view-few-shot.png",
-            )
-
-            result = GenerationResult(
-                job_id=self._extract_job_id(data),
-                status="completed" if stored_asset["access_url"] else "failed",
-                provider=model.provider,
-                model=model.id,
-                image_url=stored_asset["access_url"],
-                revised_prompt=prompt,
-                message="Few-shot multi-view generation completed." if stored_asset["access_url"] else "No asset returned.",
-                raw_response=data,
-            ).model_copy(update=self._build_reference_result_update(metadata))
-
-            if result.image_url:
-                self._persist_history(
-                    kind="multi_view",
-                    title=self._feature_title("multi_view", model.label),
-                    model_id=model.id,
-                    provider=model.provider.value,
-                    status=result.status,
-                    prompt=prompt,
-                    job_id=result.job_id,
-                    image_url=result.image_url,
-                    storage_url=stored_asset["storage_url"],
-                    metadata={
-                        "upstream_platform": "apiyi",
-                        "upstream_api": "images_edits_few_shot",
-                        "upstream_model": model.upstream_model_id,
-                        "train_reference_count": 10,
-                        "original_prompt": metadata.prompt,
-                        **stored_asset["metadata"],
-                    },
-                )
-            return result
-        finally:
-            _job_stage_callback.reset(stage_token)
-            _request_user.reset(context_token)
-
-    async def _generate_multi_view_with_apiyi_gpt_image2_all_with_context(
-        self,
-        *,
-        file: UploadFile | None,
-        files: list[UploadFile] | None = None,
-        metadata: ReferenceImageRequestMetadata,
-        current_user: User,
-        source_image_url: str | None = None,
-        source_image_urls: list[str] | None = None,
-        stage_callback: Callable[[str], None] | None = None,
-    ) -> GenerationResult:
-        """使用 Qwen3-VL 反推提示词，再用 gpt-image-2-all-apiyi 生成多视图。"""
-        context_token = _request_user.set(current_user)
-        stage_token = _job_stage_callback.set(stage_callback)
-        model = self._get_model_or_404(metadata.model)
-
-        train_dir = Path(__file__).resolve().parents[4] / "multi_picture" / "train"
-        train_files = sorted(train_dir.glob("*"), key=lambda p: self._sort_key_for_train_files(p))
-        if len(train_files) < 5:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"train 目录需要 5 张参考图，但只找到 {len(train_files)} 张",
-            )
 
         # 确定用户输入的原图
         input_file = files[0] if files else file
@@ -610,29 +458,17 @@ class AIService:
             )
         metadata = self._with_primary_multi_view_source(metadata, primary_source_url)
         generated_prompt = await self._build_qwen_multi_view_prompt(input_file=input_file, metadata=metadata)
-        metadata = metadata.model_copy(update={"prompt": generated_prompt})
-
-        combined_files: list[UploadFile] = []
-        for train_path in train_files[:5]:
-            content = await asyncio.to_thread(train_path.read_bytes)
-            suffix = train_path.suffix.lower()
-            mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
-            mime_type = mime_map.get(suffix, "image/png")
-            combined_files.append(
-                UploadFile(
-                    filename=train_path.name,
-                    file=BytesIO(content),
-                    size=len(content),
-                    headers=Headers({"content-type": mime_type}),
-                )
-            )
-        combined_files.append(input_file)
-
-        updated_metadata = metadata.model_copy(update={"image_count": len(combined_files)})
+        updated_metadata = metadata.model_copy(update={"prompt": generated_prompt, "image_count": 1})
 
         try:
+            if model.provider == ProviderType.closeai:
+                return await self._transform_with_closeai_gpt_image2(
+                    files=[input_file],
+                    metadata=updated_metadata,
+                    model=model,
+                )
             return await self._transform_with_apiyi_gpt_image2_all(
-                files=combined_files,
+                files=[input_file],
                 metadata=updated_metadata,
                 model=model,
             )
@@ -718,7 +554,7 @@ class AIService:
         finally:
             _request_user.reset(context_token)
 
-    def _get_model_or_404(self, model_id: str) -> TTAPIModelConfig:
+    def _get_model_or_404(self, model_id: str) -> ImageModelConfig:
         model = MODEL_CATALOG.get(model_id)
         if model is None:
             raise HTTPException(
@@ -751,158 +587,25 @@ class AIService:
             )
         return self.settings.closeai_api_key
 
-    def _require_wuyin_api_key(self) -> str:
-        if not self.settings.wuyin_api_key:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="WUYIN_API_KEY is not configured.",
-            )
-        return self.settings.wuyin_api_key
-
     def _use_apiyi(self) -> bool:
         return self.settings.ai_upstream_platform.strip().lower() == "apiyi"
 
     def _upstream_platform_label(self) -> str:
         return "APIYI" if self._use_apiyi() else "TTAPI"
 
-    def _build_model_pricing_hint(self, model: TTAPIModelConfig, platform_label: str) -> str:
+    def _build_model_pricing_hint(self, model: ImageModelConfig, platform_label: str) -> str:
         if model.provider == ProviderType.apiyi:
             return model.pricing_hint
-        if model.provider == ProviderType.wuyin:
-            return "GPT Image 2 generation via Wuyin relay"
         if model.id == "gemini-3.1-flash-image-preview":
             return f"Nano Banana 2 image generation via {platform_label}"
         return f"{model.label} via {platform_label}"
-
-    async def _generate_with_wuyin_gpt_image2(
-        self,
-        *,
-        request: TextToImageRequest,
-        model: TTAPIModelConfig,
-    ) -> GenerationResult:
-        submit_data, final_data, job_id, image_urls = await self._submit_and_poll_wuyin_image_job(
-            prompt=request.prompt,
-            size=request.aspect_ratio,
-            urls=None,
-        )
-        first_image_url = image_urls[0] if image_urls else None
-        if not first_image_url:
-            wuyin_status = self._extract_wuyin_status(final_data)
-            message = "Wuyin GPT Image 2 task did not return any image URL."
-            if wuyin_status == "failed":
-                message = "Wuyin GPT Image 2 task failed."
-            elif wuyin_status == "processing":
-                message = "Wuyin GPT Image 2 task is still processing."
-            return GenerationResult(
-                job_id=job_id,
-                status="failed" if wuyin_status == "failed" else "queued",
-                provider=model.provider,
-                model=model.id,
-                image_url=None,
-                message=message,
-                raw_response=final_data,
-            )
-
-        stored_asset = await self._store_generated_asset(
-            image_url=first_image_url,
-            kind="text_to_image",
-            model=model.id,
-        )
-        result = GenerationResult(
-            job_id=job_id,
-            status="completed",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            message="Image generation completed.",
-            raw_response=final_data,
-        )
-        self._persist_history(
-            kind="text_to_image",
-            title=self._history_title_for_kind("text_to_image"),
-            model_id=model.id,
-            provider=model.provider.value,
-            status=result.status,
-            prompt=request.prompt,
-            job_id=result.job_id,
-            image_url=result.image_url,
-            storage_url=stored_asset["storage_url"],
-            metadata={
-                "upstream_platform": "wuyin",
-                "aspect_ratio": request.aspect_ratio,
-                "submitted_size": request.aspect_ratio,
-                **stored_asset["metadata"],
-            },
-        )
-        return result
-
-    async def _fuse_with_wuyin_gpt_image2(
-        self,
-        *,
-        metadata: FusionRequestMetadata,
-        model: TTAPIModelConfig,
-    ) -> GenerationResult:
-        reference_urls = self._resolve_wuyin_reference_urls(metadata.source_images)
-        submit_data, final_data, job_id, image_urls = await self._submit_and_poll_wuyin_image_job(
-            prompt=self._build_fusion_prompt(metadata),
-            size="1:1",
-            urls=reference_urls,
-        )
-        first_image_url = image_urls[0] if image_urls else None
-        if not first_image_url:
-            wuyin_status = self._extract_wuyin_status(final_data)
-            return GenerationResult(
-                job_id=job_id,
-                status="failed" if wuyin_status == "failed" else "queued",
-                provider=model.provider,
-                model=model.id,
-                image_url=None,
-                message="Fusion task failed." if wuyin_status == "failed" else "Fusion task is still processing.",
-                raw_response=final_data if final_data else submit_data,
-            )
-
-        stored_asset = await self._store_generated_asset(
-            image_url=first_image_url,
-            kind="fusion",
-            model=model.id,
-            preferred_name=self._preferred_fusion_asset_name(metadata),
-        )
-        result = GenerationResult(
-            job_id=job_id,
-            status="completed",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            message="Fusion generation completed.",
-            raw_response=final_data,
-        )
-        self._persist_history(
-            kind="fusion",
-            title=self._history_title_for_kind("fusion"),
-            model_id=model.id,
-            provider=model.provider.value,
-            status=result.status,
-            prompt=metadata.prompt,
-            job_id=result.job_id,
-            image_url=result.image_url,
-            storage_url=stored_asset["storage_url"],
-            metadata={
-                "upstream_platform": "wuyin",
-                "reference_urls": reference_urls,
-                **self._build_fusion_history_metadata(metadata),
-                "negative_prompt": metadata.negative_prompt,
-                "strength": metadata.strength,
-                **stored_asset["metadata"],
-            },
-        )
-        return result
 
     async def _fuse_with_apiyi_gpt_image2_all(
         self,
         *,
         files: list[UploadFile],
         metadata: FusionRequestMetadata,
-        model: TTAPIModelConfig,
+        model: ImageModelConfig,
     ) -> GenerationResult:
         prompt = self._build_fusion_prompt(metadata)
         data = await self._post_apiyi_gpt_image2_vip_edit(
@@ -911,51 +614,22 @@ class AIService:
             files=files,
             size="auto",
         )
-        stored_asset, raw_asset_metadata = await self._store_generated_result_from_openai_payload(
+        return await self._finalize_openai_edit_fusion_result(
             data=data,
-            kind="fusion",
-            model=model.id,
+            metadata=metadata,
+            model=model,
+            prompt=prompt,
+            upstream_platform="apiyi",
+            upstream_api="images_edits",
             preferred_name=self._preferred_fusion_asset_name(metadata),
         )
-        result = GenerationResult(
-            job_id=self._extract_job_id(data),
-            status="completed" if stored_asset["access_url"] else "failed",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            message="Fusion generation completed." if stored_asset["access_url"] else "Fusion returned no asset.",
-            raw_response=data,
-        )
-        if result.image_url:
-            self._persist_history(
-                kind="fusion",
-                title=self._history_title_for_kind("fusion"),
-                model_id=model.id,
-                provider=model.provider.value,
-                status=result.status,
-                prompt=prompt,
-                job_id=result.job_id,
-                image_url=result.image_url,
-                storage_url=stored_asset["storage_url"],
-                metadata={
-                    "upstream_platform": "apiyi",
-                    "upstream_model": model.upstream_model_id,
-                    **self._build_fusion_history_metadata(metadata),
-                    "negative_prompt": metadata.negative_prompt,
-                    "strength": metadata.strength,
-                    "upstream_api": "images_edits",
-                    **stored_asset["metadata"],
-                    **raw_asset_metadata,
-                },
-            )
-        return result
 
     async def _fuse_with_closeai_gpt_image2(
         self,
         *,
         files: list[UploadFile],
         metadata: FusionRequestMetadata,
-        model: TTAPIModelConfig,
+        model: ImageModelConfig,
     ) -> GenerationResult:
         prompt = self._build_fusion_prompt(metadata)
         data = await self._post_closeai_gpt_image2_edit(
@@ -964,110 +638,22 @@ class AIService:
             files=files,
             size="auto",
         )
-        stored_asset, raw_asset_metadata = await self._store_generated_result_from_openai_payload(
+        return await self._finalize_openai_edit_fusion_result(
             data=data,
-            kind="fusion",
-            model=model.id,
+            metadata=metadata,
+            model=model,
+            prompt=prompt,
+            upstream_platform="closeai",
+            upstream_api="images_edits",
             preferred_name=self._preferred_fusion_asset_name(metadata),
         )
-        result = GenerationResult(
-            job_id=self._extract_job_id(data),
-            status="completed" if stored_asset["access_url"] else "failed",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            message="Fusion generation completed." if stored_asset["access_url"] else "Fusion returned no asset.",
-            raw_response=data,
-        )
-        if result.image_url:
-            self._persist_history(
-                kind="fusion",
-                title=self._history_title_for_kind("fusion"),
-                model_id=model.id,
-                provider=model.provider.value,
-                status=result.status,
-                prompt=prompt,
-                job_id=result.job_id,
-                image_url=result.image_url,
-                storage_url=stored_asset["storage_url"],
-                metadata={
-                    "upstream_platform": "closeai",
-                    "upstream_model": model.upstream_model_id,
-                    "upstream_api": "images_edits",
-                    **self._build_fusion_history_metadata(metadata),
-                    "negative_prompt": metadata.negative_prompt,
-                    "strength": metadata.strength,
-                    **stored_asset["metadata"],
-                    **raw_asset_metadata,
-                },
-            )
-        return result
-
-    async def _transform_with_wuyin_gpt_image2(
-        self,
-        *,
-        metadata: ReferenceImageRequestMetadata,
-        model: TTAPIModelConfig,
-    ) -> GenerationResult:
-        reference_urls = self._resolve_wuyin_reference_urls(metadata.source_images)
-        submit_data, final_data, job_id, image_urls = await self._submit_and_poll_wuyin_image_job(
-            prompt=metadata.prompt,
-            size="1:1",
-            urls=reference_urls,
-        )
-        first_image_url = image_urls[0] if image_urls else None
-        if not first_image_url:
-            wuyin_status = self._extract_wuyin_status(final_data)
-            return GenerationResult(
-                job_id=job_id,
-                status="failed" if wuyin_status == "failed" else "queued",
-                provider=model.provider,
-                model=model.id,
-                image_url=None,
-                message="Reference image transform failed." if wuyin_status == "failed" else "Reference image transform is still processing.",
-                raw_response=final_data if final_data else submit_data,
-            ).model_copy(update=self._build_reference_result_update(metadata))
-
-        stored_asset = await self._store_generated_asset(
-            image_url=first_image_url,
-            kind=metadata.feature,
-            model=model.id,
-            preferred_name=metadata.filename,
-        )
-        result = GenerationResult(
-            job_id=job_id,
-            status="completed",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            message="Reference image transform completed.",
-            raw_response=final_data,
-        ).model_copy(update=self._build_reference_result_update(metadata))
-        self._persist_history(
-            kind=self._map_feature_to_history_kind(metadata.feature),
-            title=self._feature_title(metadata.feature, model.label),
-            model_id=model.id,
-            provider=model.provider.value,
-            status=result.status,
-            prompt=metadata.prompt,
-            job_id=result.job_id,
-            image_url=result.image_url,
-            storage_url=stored_asset["storage_url"],
-            metadata={
-                "upstream_platform": "wuyin",
-                "reference_urls": reference_urls,
-                **stored_asset["metadata"],
-                **self._build_reference_history_metadata(metadata),
-            },
-            )
-        return result
 
     async def _transform_with_closeai_gpt_image2(
         self,
         *,
         files: list[UploadFile],
         metadata: ReferenceImageRequestMetadata,
-        model: TTAPIModelConfig,
+        model: ImageModelConfig,
     ) -> GenerationResult:
         prompt = self._build_apiyi_reference_prompt(metadata)
         data = await self._post_closeai_gpt_image2_edit(
@@ -1076,51 +662,22 @@ class AIService:
             files=files,
             size=self._map_apiyi_vip_edit_size(metadata.image_size),
         )
-        stored_asset, raw_asset_metadata = await self._store_generated_result_from_openai_payload(
+        return await self._finalize_openai_edit_reference_result(
             data=data,
-            kind=metadata.feature,
-            model=model.id,
+            metadata=metadata,
+            model=model,
+            prompt=prompt,
+            upstream_platform="closeai",
+            upstream_api="images_edits",
             preferred_name=metadata.filename,
         )
-        result = GenerationResult(
-            job_id=self._extract_job_id(data),
-            status="completed" if stored_asset["access_url"] else "failed",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            revised_prompt=prompt,
-            message="Reference image transform completed." if stored_asset["access_url"] else "Reference image transform returned no asset.",
-            raw_response=data,
-        ).model_copy(update=self._build_reference_result_update(metadata))
-        if result.image_url:
-            self._persist_history(
-                kind=self._map_feature_to_history_kind(metadata.feature),
-                title=self._feature_title(metadata.feature, model.label),
-                model_id=model.id,
-                provider=model.provider.value,
-                status=result.status,
-                prompt=prompt,
-                job_id=result.job_id,
-                image_url=result.image_url,
-                storage_url=stored_asset["storage_url"],
-                metadata={
-                    "upstream_platform": "closeai",
-                    "upstream_api": "images_edits",
-                    "upstream_model": model.upstream_model_id,
-                    "original_prompt": metadata.prompt,
-                    **stored_asset["metadata"],
-                    **raw_asset_metadata,
-                    **self._build_reference_history_metadata(metadata),
-                },
-            )
-        return result
 
     async def _transform_with_apiyi_gpt_image2_all(
         self,
         *,
         files: list[UploadFile],
         metadata: ReferenceImageRequestMetadata,
-        model: TTAPIModelConfig,
+        model: ImageModelConfig,
     ) -> GenerationResult:
         prompt = self._build_apiyi_reference_prompt(metadata)
         data = await self._post_apiyi_gpt_image2_vip_edit(
@@ -1129,51 +686,21 @@ class AIService:
             files=files,
             size=self._map_apiyi_vip_edit_size(metadata.image_size),
         )
-        stored_asset, raw_asset_metadata = await self._store_generated_result_from_openai_payload(
+        return await self._finalize_openai_edit_reference_result(
             data=data,
-            kind=metadata.feature,
-            model=model.id,
+            metadata=metadata,
+            model=model,
+            prompt=prompt,
+            upstream_platform="apiyi",
+            upstream_api="images_edits",
             preferred_name=metadata.filename,
         )
-        result = GenerationResult(
-            job_id=self._extract_job_id(data),
-            status="completed" if stored_asset["access_url"] else "failed",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            revised_prompt=prompt,
-            message="Reference image transform completed." if stored_asset["access_url"] else "Reference image transform returned no asset.",
-            raw_response=data,
-        ).model_copy(update=self._build_reference_result_update(metadata))
-        if result.image_url:
-            # 历史记录保存实际使用的完整提示词，而不是前端传入的原始 prompt
-            self._persist_history(
-                kind=self._map_feature_to_history_kind(metadata.feature),
-                title=self._feature_title(metadata.feature, model.label),
-                model_id=model.id,
-                provider=model.provider.value,
-                status=result.status,
-                prompt=prompt,
-                job_id=result.job_id,
-                image_url=result.image_url,
-                storage_url=stored_asset["storage_url"],
-                metadata={
-                    "upstream_platform": "apiyi",
-                    "upstream_api": "images_edits",
-                    "upstream_model": model.upstream_model_id,
-                    "original_prompt": metadata.prompt,
-                    **stored_asset["metadata"],
-                    **raw_asset_metadata,
-                    **self._build_reference_history_metadata(metadata),
-                },
-            )
-        return result
 
     async def _generate_with_gemini_apiyi(
         self,
         *,
         request: TextToImageRequest,
-        model: TTAPIModelConfig,
+        model: ImageModelConfig,
     ) -> GenerationResult:
         api_key = self._require_apiyi_api_key()
         data = await self._post_json_with_bearer(
@@ -1195,46 +722,20 @@ class AIService:
             },
             timeout=self.settings.apiyi_timeout_seconds,
         )
-        image_bytes, content_type = self._extract_inline_image(data)
-        stored_asset = await self._store_generated_binary_asset(
-            image_bytes=image_bytes,
-            content_type=content_type,
-            kind="text_to_image",
-            model=model.id,
-        )
-        result = GenerationResult(
-            job_id=None,
-            status="completed",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            revised_prompt=self._extract_revised_prompt(data),
-            message="Image generation completed.",
-            raw_response=data,
-        )
-        self._persist_history(
-            kind="text_to_image",
-            title=self._history_title_for_kind("text_to_image"),
-            model_id=model.id,
-            provider=model.provider.value,
-            status=result.status,
+        return await self._finalize_gemini_text_result(
+            data=data,
+            model=model,
             prompt=request.prompt,
-            image_url=result.image_url,
-            storage_url=stored_asset["storage_url"],
-            metadata={
-                "upstream_platform": "apiyi",
-                "aspect_ratio": request.aspect_ratio,
-                "image_size": request.image_size,
-                **stored_asset["metadata"],
-            },
+            aspect_ratio=request.aspect_ratio,
+            image_size=request.image_size,
+            upstream_platform="apiyi",
         )
-        return result
 
-    async def _generate_with_flux_apiyi(
+    async def _generate_with_openai_image_apiyi(
         self,
         *,
         request: TextToImageRequest,
-        model: TTAPIModelConfig,
+        model: ImageModelConfig,
     ) -> GenerationResult:
         api_key = self._require_apiyi_api_key()
         data = await self._post_json_with_bearer(
@@ -1291,7 +792,7 @@ class AIService:
         self,
         *,
         request: TextToImageRequest,
-        model: TTAPIModelConfig,
+        model: ImageModelConfig,
     ) -> GenerationResult:
         api_key = self._require_api_key()
         payload = {
@@ -1307,112 +808,20 @@ class AIService:
             api_key=api_key,
             payload=payload,
         )
-        image_url = self._extract_image_url(data)
-        stored_asset = await self._store_generated_asset(
-            image_url=image_url,
-            kind="text_to_image",
-            model=model.id,
-        )
-        result = GenerationResult(
-            job_id=None,
-            status="completed",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            revised_prompt=self._extract_revised_prompt(data),
-            message="Image generation completed.",
-            raw_response=data,
-        )
-        self._persist_history(
-            kind="text_to_image",
-            title=self._history_title_for_kind("text_to_image"),
-            model_id=model.id,
-            provider=model.provider.value,
-            status=result.status,
+        return await self._finalize_gemini_text_result(
+            data=data,
+            model=model,
             prompt=request.prompt,
-            job_id=result.job_id,
-            image_url=result.image_url,
-            storage_url=stored_asset["storage_url"],
-            metadata={
-                "aspect_ratio": request.aspect_ratio,
-                "image_size": request.image_size,
-                **stored_asset["metadata"],
-            },
+            aspect_ratio=request.aspect_ratio,
+            image_size=request.image_size,
         )
-        return result
-
-    async def _generate_with_flux(
-        self,
-        *,
-        request: TextToImageRequest,
-        model: TTAPIModelConfig,
-    ) -> GenerationResult:
-        api_key = self._require_api_key()
-        payload = {
-            "prompt": request.prompt,
-            "mode": model.id,
-            "size": request.size,
-            "aspect_ratio": request.aspect_ratio,
-        }
-        submit_data = await self._post_json(
-            base_url=self.settings.ttapi_flux_base_url,
-            path="/flux/generate",
-            api_key=api_key,
-            payload=payload,
-        )
-        job_id = self._extract_job_id(submit_data)
-        if not job_id:
-            return GenerationResult(
-                job_id=None,
-                status="failed",
-                provider=model.provider,
-                model=model.id,
-                image_url=None,
-                message="Flux generation did not return a task id.",
-                raw_response=submit_data,
-            )
-
-        final_data = await self._poll_flux_result(job_id=job_id, api_key=api_key)
-        image_url = self._extract_image_url(final_data)
-        stored_asset = await self._store_generated_asset(
-            image_url=image_url,
-            kind="text_to_image",
-            model=model.id,
-        )
-        result = GenerationResult(
-            job_id=job_id,
-            status="completed" if image_url else "queued",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            message="Image generation completed." if image_url else "Flux task submitted and still processing.",
-            raw_response=final_data,
-        )
-        if result.image_url:
-            self._persist_history(
-                kind="text_to_image",
-                title=self._history_title_for_kind("text_to_image"),
-                model_id=model.id,
-                provider=model.provider.value,
-                status=result.status,
-                prompt=request.prompt,
-                job_id=result.job_id,
-                image_url=result.image_url,
-                storage_url=stored_asset["storage_url"],
-                metadata={
-                    "aspect_ratio": request.aspect_ratio,
-                    "size": request.size,
-                    **stored_asset["metadata"],
-                },
-            )
-        return result
 
     async def _fuse_with_gemini(
         self,
         *,
         files: list[UploadFile],
         metadata: FusionRequestMetadata,
-        model: TTAPIModelConfig,
+        model: ImageModelConfig,
     ) -> GenerationResult:
         api_key = self._require_api_key()
         refer_images = [await self._file_to_data_url(file) for file in files]
@@ -1430,46 +839,20 @@ class AIService:
             api_key=api_key,
             payload=payload,
         )
-        image_url = self._extract_image_url(data)
-        stored_asset = await self._store_generated_asset(
-            image_url=image_url,
-            kind="fusion",
-            model=model.id,
+        return await self._finalize_gemini_fusion_result(
+            data=data,
+            metadata=metadata,
+            model=model,
+            prompt=metadata.prompt,
             preferred_name=self._preferred_fusion_asset_name(metadata),
         )
-        result = GenerationResult(
-            job_id=None,
-            status="completed",
-            provider=model.provider,
-            model=model.id,
-            image_url=image_url,
-            revised_prompt=self._extract_revised_prompt(data),
-            message="Fusion generation completed.",
-            raw_response=data,
-        )
-        self._persist_history(
-            kind="fusion",
-            title=self._history_title_for_kind("fusion"),
-            model_id=model.id,
-            provider=model.provider.value,
-            status=result.status,
-            prompt=metadata.prompt,
-            job_id=result.job_id,
-            image_url=result.image_url,
-            storage_url=stored_asset["storage_url"],
-            metadata={
-                **self._build_fusion_history_metadata(metadata),
-                **stored_asset["metadata"],
-            },
-        )
-        return result
 
     async def _fuse_with_gemini_apiyi(
         self,
         *,
         files: list[UploadFile],
         metadata: FusionRequestMetadata,
-        model: TTAPIModelConfig,
+        model: ImageModelConfig,
     ) -> GenerationResult:
         api_key = self._require_apiyi_api_key()
         parts: list[dict[str, Any]] = [{"text": self._build_fusion_prompt(metadata)}]
@@ -1503,49 +886,21 @@ class AIService:
             },
             timeout=self.settings.apiyi_timeout_seconds,
         )
-        image_bytes, content_type = self._extract_inline_image(data)
-        stored_asset = await self._store_generated_binary_asset(
-            image_bytes=image_bytes,
-            content_type=content_type,
-            kind="fusion",
-            model=model.id,
-            preferred_name=self._preferred_fusion_asset_name(metadata),
-        )
-        result = GenerationResult(
-            job_id=None,
-            status="completed",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            revised_prompt=self._extract_revised_prompt(data),
-            message="Fusion generation completed.",
-            raw_response=data,
-        )
-        self._persist_history(
-            kind="fusion",
-            title=self._history_title_for_kind("fusion"),
-            model_id=model.id,
-            provider=model.provider.value,
-            status=result.status,
+        return await self._finalize_gemini_fusion_result(
+            data=data,
+            metadata=metadata,
+            model=model,
             prompt=metadata.prompt,
-            image_url=result.image_url,
-            storage_url=stored_asset["storage_url"],
-            metadata={
-                "upstream_platform": "apiyi",
-                **self._build_fusion_history_metadata(metadata),
-                "negative_prompt": metadata.negative_prompt,
-                "strength": metadata.strength,
-                **stored_asset["metadata"],
-            },
+            preferred_name=self._preferred_fusion_asset_name(metadata),
+            upstream_platform="apiyi",
         )
-        return result
 
     async def _transform_with_gemini(
         self,
         *,
         files: list[UploadFile],
         metadata: ReferenceImageRequestMetadata,
-        model: TTAPIModelConfig,
+        model: ImageModelConfig,
     ) -> GenerationResult:
         api_key = self._require_api_key()
         refer_images = [await self._file_to_data_url(file) for file in files]
@@ -1563,46 +918,20 @@ class AIService:
             api_key=api_key,
             payload=payload,
         )
-        image_url = self._extract_image_url(data)
-        stored_asset = await self._store_generated_asset(
-            image_url=image_url,
-            kind=metadata.feature,
-            model=model.id,
+        return await self._finalize_gemini_reference_result(
+            data=data,
+            metadata=metadata,
+            model=model,
+            prompt=metadata.prompt,
             preferred_name=metadata.filename,
         )
-        result = GenerationResult(
-            job_id=None,
-            status="completed",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            revised_prompt=self._extract_revised_prompt(data),
-            message="Reference image transform completed.",
-            raw_response=data,
-        ).model_copy(update=self._build_reference_result_update(metadata))
-        self._persist_history(
-            kind=self._map_feature_to_history_kind(metadata.feature),
-            title=self._feature_title(metadata.feature, model.label),
-            model_id=model.id,
-            provider=model.provider.value,
-            status=result.status,
-            prompt=metadata.prompt,
-            job_id=result.job_id,
-            image_url=result.image_url,
-            storage_url=stored_asset["storage_url"],
-            metadata={
-                **stored_asset["metadata"],
-                **self._build_reference_history_metadata(metadata),
-            },
-        )
-        return result
 
     async def _transform_with_gemini_apiyi(
         self,
         *,
         files: list[UploadFile],
         metadata: ReferenceImageRequestMetadata,
-        model: TTAPIModelConfig,
+        model: ImageModelConfig,
     ) -> GenerationResult:
         api_key = self._require_apiyi_api_key()
         parts: list[dict[str, Any]] = [{"text": metadata.prompt}]
@@ -1636,113 +965,21 @@ class AIService:
             },
             timeout=self.settings.apiyi_timeout_seconds,
         )
-        result_image_bytes, content_type = self._extract_inline_image(data)
-        stored_asset = await self._store_generated_binary_asset(
-            image_bytes=result_image_bytes,
-            content_type=content_type,
-            kind=metadata.feature,
-            model=model.id,
-            preferred_name=metadata.filename,
-        )
-        result = GenerationResult(
-            job_id=None,
-            status="completed",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            revised_prompt=self._extract_revised_prompt(data),
-            message="Reference image transform completed.",
-            raw_response=data,
-        ).model_copy(update=self._build_reference_result_update(metadata))
-        self._persist_history(
-            kind=self._map_feature_to_history_kind(metadata.feature),
-            title=self._feature_title(metadata.feature, model.label),
-            model_id=model.id,
-            provider=model.provider.value,
-            status=result.status,
+        return await self._finalize_gemini_reference_result(
+            data=data,
+            metadata=metadata,
+            model=model,
             prompt=metadata.prompt,
-            image_url=result.image_url,
-            storage_url=stored_asset["storage_url"],
-            metadata={
-                "upstream_platform": "apiyi",
-                **stored_asset["metadata"],
-                **self._build_reference_history_metadata(metadata),
-            },
+            preferred_name=metadata.filename,
+            upstream_platform="apiyi",
         )
-        return result
 
-    async def _fuse_with_flux(
+    async def _fuse_with_openai_image_apiyi(
         self,
         *,
         files: list[UploadFile],
         metadata: FusionRequestMetadata,
-        model: TTAPIModelConfig,
-    ) -> GenerationResult:
-        api_key = self._require_api_key()
-        multipart_files = [await self._build_multipart_file(file) for file in files]
-        form_data = {
-            "prompt": self._build_fusion_prompt(metadata),
-            "mode": model.id,
-            "aspect_ratio": "1:1",
-        }
-        submit_data = await self._post_multipart(
-            base_url=self.settings.ttapi_flux_base_url,
-            path="/flux/edits",
-            api_key=api_key,
-            data=form_data,
-            files=multipart_files,
-        )
-        job_id = self._extract_job_id(submit_data)
-        if not job_id:
-            return GenerationResult(
-                job_id=None,
-                status="failed",
-                provider=model.provider,
-                model=model.id,
-                message="Flux edit did not return a task id.",
-                raw_response=submit_data,
-            )
-        final_data = await self._poll_flux_result(job_id=job_id, api_key=api_key)
-        image_url = self._extract_image_url(final_data)
-        stored_asset = await self._store_generated_asset(
-            image_url=image_url,
-            kind="fusion",
-            model=model.id,
-            preferred_name=self._preferred_fusion_asset_name(metadata),
-        )
-        result = GenerationResult(
-            job_id=job_id,
-            status="completed" if image_url else "queued",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            message="Fusion completed." if image_url else "Fusion task submitted and still processing.",
-            raw_response=final_data,
-        )
-        if result.image_url:
-            self._persist_history(
-                kind="fusion",
-                title=self._history_title_for_kind("fusion"),
-                model_id=model.id,
-                provider=model.provider.value,
-                status=result.status,
-                prompt=metadata.prompt,
-                job_id=result.job_id,
-                image_url=result.image_url,
-                storage_url=stored_asset["storage_url"],
-                metadata={
-                    **self._build_fusion_history_metadata(metadata),
-                    **stored_asset["metadata"],
-                },
-            )
-        return result
-
-    async def _fuse_with_flux_apiyi(
-        self,
-        *,
-        files: list[UploadFile],
-        metadata: FusionRequestMetadata,
-        model: TTAPIModelConfig,
+        model: ImageModelConfig,
     ) -> GenerationResult:
         api_key = self._require_apiyi_api_key()
         multipart_files = [await self._build_multipart_file(file) for file in files]
@@ -1756,116 +993,21 @@ class AIService:
             },
             files=multipart_files,
         )
-        upstream_image_url = self._extract_image_url(data)
-        stored_asset = await self._store_generated_asset(
-            image_url=upstream_image_url,
-            kind="fusion",
-            model=model.id,
+        return await self._finalize_openai_edit_fusion_result(
+            data=data,
+            metadata=metadata,
+            model=model,
+            prompt=metadata.prompt,
+            upstream_platform="apiyi",
             preferred_name=self._preferred_fusion_asset_name(metadata),
         )
-        result = GenerationResult(
-            job_id=self._extract_job_id(data),
-            status="completed" if stored_asset["access_url"] else "failed",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            message="Fusion completed." if stored_asset["access_url"] else "Fusion returned no asset.",
-            raw_response=data,
-        )
-        if result.image_url:
-            self._persist_history(
-                kind="fusion",
-                title=self._history_title_for_kind("fusion"),
-                model_id=model.id,
-                provider=model.provider.value,
-                status=result.status,
-                prompt=metadata.prompt,
-                job_id=result.job_id,
-                image_url=result.image_url,
-                storage_url=stored_asset["storage_url"],
-                metadata={
-                    "upstream_platform": "apiyi",
-                    **self._build_fusion_history_metadata(metadata),
-                    "negative_prompt": metadata.negative_prompt,
-                    "strength": metadata.strength,
-                    **stored_asset["metadata"],
-                },
-            )
-        return result
 
-    async def _transform_with_flux(
+    async def _transform_with_openai_image_apiyi(
         self,
         *,
         files: list[UploadFile],
         metadata: ReferenceImageRequestMetadata,
-        model: TTAPIModelConfig,
-    ) -> GenerationResult:
-        api_key = self._require_api_key()
-        multipart_files = [await self._build_multipart_file(file) for file in files]
-        form_data = {
-            "prompt": metadata.prompt,
-            "mode": model.id,
-            "aspect_ratio": "1:1",
-        }
-        submit_data = await self._post_multipart(
-            base_url=self.settings.ttapi_flux_base_url,
-            path="/flux/edits",
-            api_key=api_key,
-            data=form_data,
-            files=multipart_files,
-        )
-        job_id = self._extract_job_id(submit_data)
-        if not job_id:
-            return GenerationResult(
-                job_id=None,
-                status="failed",
-                provider=model.provider,
-                model=model.id,
-                message="Flux transform did not return a task id.",
-                raw_response=submit_data,
-            )
-
-        final_data = await self._poll_flux_result(job_id=job_id, api_key=api_key)
-        image_url = self._extract_image_url(final_data)
-        stored_asset = await self._store_generated_asset(
-            image_url=image_url,
-            kind=metadata.feature,
-            model=model.id,
-            preferred_name=metadata.filename,
-        )
-        result = GenerationResult(
-            job_id=job_id,
-            status="completed" if image_url else "queued",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            message="Reference image transform completed." if image_url else "Reference image transform still processing.",
-            raw_response=final_data,
-        ).model_copy(update=self._build_reference_result_update(metadata))
-        if result.image_url:
-            self._persist_history(
-                kind=self._map_feature_to_history_kind(metadata.feature),
-                title=self._feature_title(metadata.feature, model.label),
-                model_id=model.id,
-                provider=model.provider.value,
-                status=result.status,
-                prompt=metadata.prompt,
-                job_id=result.job_id,
-                image_url=result.image_url,
-                storage_url=stored_asset["storage_url"],
-                metadata={
-                    **stored_asset["metadata"],
-                    **self._build_reference_history_metadata(metadata),
-                },
-        )
-        return result
-
-    async def _transform_with_flux_apiyi(
-        self,
-        *,
-        files: list[UploadFile],
-        metadata: ReferenceImageRequestMetadata,
-        model: TTAPIModelConfig,
+        model: ImageModelConfig,
     ) -> GenerationResult:
         api_key = self._require_apiyi_api_key()
         multipart_files = [await self._build_multipart_file(file) for file in files]
@@ -1880,40 +1022,14 @@ class AIService:
             },
             files=multipart_files,
         )
-        upstream_image_url = self._extract_image_url(data)
-        stored_asset = await self._store_generated_asset(
-            image_url=upstream_image_url,
-            kind=metadata.feature,
-            model=model.id,
+        return await self._finalize_openai_edit_reference_result(
+            data=data,
+            metadata=metadata,
+            model=model,
+            prompt=metadata.prompt,
+            upstream_platform="apiyi",
             preferred_name=metadata.filename,
         )
-        result = GenerationResult(
-            job_id=self._extract_job_id(data),
-            status="completed" if stored_asset["access_url"] else "failed",
-            provider=model.provider,
-            model=model.id,
-            image_url=stored_asset["access_url"],
-            message="Reference image transform completed." if stored_asset["access_url"] else "Reference image transform returned no asset.",
-            raw_response=data,
-        ).model_copy(update=self._build_reference_result_update(metadata))
-        if result.image_url:
-            self._persist_history(
-                kind=self._map_feature_to_history_kind(metadata.feature),
-                title=self._feature_title(metadata.feature, model.label),
-                model_id=model.id,
-                provider=model.provider.value,
-                status=result.status,
-                prompt=metadata.prompt,
-                job_id=result.job_id,
-                image_url=result.image_url,
-                storage_url=stored_asset["storage_url"],
-                metadata={
-                    "upstream_platform": "apiyi",
-                    **stored_asset["metadata"],
-                    **self._build_reference_history_metadata(metadata),
-                },
-            )
-        return result
 
     async def _post_json(
         self,
@@ -1957,7 +1073,7 @@ class AIService:
     async def _post_apiyi_gpt_image2_vip_edit(
         self,
         *,
-        model: TTAPIModelConfig,
+        model: ImageModelConfig,
         prompt: str,
         files: list[UploadFile],
         size: str = "auto",
@@ -1985,12 +1101,12 @@ class AIService:
     async def _post_closeai_gpt_image2_edit(
         self,
         *,
-        model: TTAPIModelConfig,
+        model: ImageModelConfig,
         prompt: str,
         files: list[UploadFile],
         size: str = "auto",
     ) -> dict[str, Any]:
-        multipart_files = [await self._build_named_multipart_file(file, field_name="image") for file in files]
+        multipart_files = [await self._build_named_multipart_file(file, field_name="image[]") for file in files]
         if not multipart_files:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -2004,7 +1120,6 @@ class AIService:
                 "model": model.upstream_model_id,
                 "prompt": prompt,
                 "size": size,
-                "response_format": "url",
             },
             files=multipart_files,
             timeout=self.settings.closeai_timeout_seconds,
@@ -2178,63 +1293,6 @@ class AIService:
     def _build_apiyi_reference_prompt(self, metadata: ReferenceImageRequestMetadata) -> str:
         return metadata.prompt.strip()
 
-    async def _post_json_with_authorization(
-        self,
-        *,
-        base_url: str,
-        path: str,
-        api_key: str,
-        payload: dict[str, Any],
-    ) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=self.settings.wuyin_timeout_seconds) as client:
-            response = await client.post(
-                f"{base_url}{path}",
-                headers={
-                    "Authorization": api_key,
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-        return self._handle_response(response)
-
-    async def _get_json_with_authorization(
-        self,
-        *,
-        base_url: str,
-        path: str,
-        api_key: str,
-        query: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=self.settings.wuyin_timeout_seconds) as client:
-            response = await client.get(
-                f"{base_url}{path}",
-                headers={
-                    "Authorization": api_key,
-                    "Accept": "application/json",
-                },
-                params=query,
-            )
-        return self._handle_response(response)
-
-    async def _post_multipart(
-        self,
-        *,
-        base_url: str,
-        path: str,
-        api_key: str,
-        data: dict[str, str],
-        files: list[tuple[str, tuple[str, bytes, str]]],
-    ) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=self.settings.ttapi_timeout_seconds) as client:
-            response = await client.post(
-                f"{base_url}{path}",
-                headers={"TT-API-KEY": api_key},
-                data=data,
-                files=files,
-            )
-        return self._handle_response(response)
-
     async def _post_multipart_with_bearer(
         self,
         *,
@@ -2272,69 +1330,6 @@ class AIService:
             )
         return self._handle_response(response)
 
-    async def _poll_flux_result(self, *, job_id: str, api_key: str) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=self.settings.ttapi_timeout_seconds) as client:
-            for _ in range(self.settings.ttapi_poll_attempts):
-                response = await client.request(
-                    "GET",
-                    f"{self.settings.ttapi_flux_base_url}/flux/fetch",
-                    headers={"TT-API-KEY": api_key},
-                    params={"jobId": job_id},
-                )
-                data = self._handle_response(response)
-                status_value = self._extract_status(data)
-                if status_value in {"completed", "succeeded", "success"}:
-                    return data
-                if status_value in {"failed", "error"}:
-                    return data
-                await asyncio.sleep(self.settings.ttapi_poll_interval_seconds)
-        return {"id": job_id, "status": "queued"}
-
-    async def _poll_wuyin_result(self, *, job_id: str, api_key: str) -> dict[str, Any]:
-        last_data: dict[str, Any] = {"id": job_id, "data": {"status": 0}}
-        for _ in range(self.settings.wuyin_poll_attempts):
-            data = await self._get_json_with_authorization(
-                base_url=self.settings.wuyin_base_url,
-                path="/api/async/detail",
-                api_key=api_key,
-                query={"id": job_id},
-            )
-            last_data = data
-            if self._extract_wuyin_image_urls(data):
-                return data
-            status_value = self._extract_wuyin_status(data)
-            if status_value in {"failed", "succeeded"}:
-                return data
-            await asyncio.sleep(self.settings.wuyin_poll_interval_seconds)
-        return last_data
-
-    async def _submit_and_poll_wuyin_image_job(
-        self,
-        *,
-        prompt: str,
-        size: str,
-        urls: list[str] | None,
-    ) -> tuple[dict[str, Any], dict[str, Any], str | None, list[str]]:
-        api_key = self._require_wuyin_api_key()
-        payload: dict[str, Any] = {
-            "prompt": prompt,
-            "size": size,
-            "count": "1",
-        }
-        if urls:
-            payload["urls"] = urls
-        submit_data = await self._post_json_with_authorization(
-            base_url=self.settings.wuyin_base_url,
-            path="/api/async/image_gpt",
-            api_key=api_key,
-            payload=payload,
-        )
-        job_id = self._extract_job_id(submit_data)
-        if not job_id:
-            return submit_data, submit_data, None, []
-        final_data = await self._poll_wuyin_result(job_id=job_id, api_key=api_key)
-        return submit_data, final_data, job_id, self._extract_wuyin_image_urls(final_data)
-
     def _handle_response(self, response: httpx.Response) -> dict[str, Any]:
         try:
             data = response.json()
@@ -2357,14 +1352,6 @@ class AIService:
         mime_type = file.content_type or "image/png"
         encoded = base64.b64encode(content).decode("utf-8")
         return f"data:{mime_type};base64,{encoded}"
-
-    def _sort_key_for_train_files(self, path: Path) -> int:
-        """从文件名提取数字序号用于排序（如 1.png -> 1, 10.png -> 10）"""
-        stem = path.stem
-        try:
-            return int(stem)
-        except ValueError:
-            return 9999
 
     async def _build_multipart_file(self, file: UploadFile) -> tuple[str, tuple[str, bytes, str]]:
         content = await file.read()
@@ -2416,33 +1403,6 @@ class AIService:
                 if isinstance(value, str) and value:
                     return value
         return None
-
-    def _extract_status(self, data: dict[str, Any]) -> str:
-        if isinstance(data.get("status"), str):
-            return data["status"].lower()
-        task = data.get("data")
-        if isinstance(task, dict) and isinstance(task.get("status"), str):
-            return task["status"].lower()
-        if isinstance(task, dict) and isinstance(task.get("state"), str):
-            return task["state"].lower()
-        return ""
-
-    def _extract_wuyin_status(self, data: dict[str, Any]) -> str:
-        task = data.get("data")
-        raw_status = task.get("status") if isinstance(task, dict) else data.get("status")
-        mapping = {
-            0: "processing",
-            1: "failed",
-            2: "succeeded",
-            "0": "processing",
-            "1": "failed",
-            "2": "succeeded",
-        }
-        if raw_status in mapping:
-            return mapping[raw_status]
-        if isinstance(raw_status, str):
-            return raw_status.lower()
-        return ""
 
     def _extract_revised_prompt(self, data: dict[str, Any]) -> str | None:
         data_list = data.get("data")
@@ -2538,15 +1498,6 @@ class AIService:
                     return "\n".join(fragments).strip()
         return None
 
-    def _extract_wuyin_image_urls(self, data: dict[str, Any]) -> list[str]:
-        task = data.get("data")
-        result = task.get("result") if isinstance(task, dict) else data.get("result")
-        if isinstance(result, list):
-            return [item for item in result if isinstance(item, str) and item]
-        if isinstance(result, str) and result:
-            return [result]
-        return []
-
     def _extract_inline_image(self, data: dict[str, Any]) -> tuple[bytes, str]:
         candidates = data.get("candidates")
         if isinstance(candidates, list):
@@ -2597,14 +1548,7 @@ class AIService:
         return None, None, None
 
     def _map_apiyi_model_id(self, model_id: str) -> str:
-        mapping = {
-            "flux1-pro": "black-forest-labs/flux-pro-v1.1",
-            "flux-2-pro": "black-forest-labs/flux-pro-v1.1",
-            "flux-2-max": "black-forest-labs/flux-kontext-max",
-            "flux-kontext-pro": "flux-kontext-pro",
-            "flux-kontext-max": "black-forest-labs/flux-kontext-max",
-        }
-        return mapping.get(model_id, model_id)
+        return model_id
 
     def _map_apiyi_vip_edit_size(self, image_size: str | None) -> str:
         if image_size in {"2K", "2048x2048"}:
@@ -2645,6 +1589,247 @@ class AIService:
             ),
             current_user=request_user,
         )
+
+    async def _finalize_openai_edit_fusion_result(
+        self,
+        *,
+        data: dict[str, Any],
+        metadata: FusionRequestMetadata,
+        model: ImageModelConfig,
+        prompt: str,
+        upstream_platform: str,
+        preferred_name: str | None,
+        upstream_api: str | None = None,
+    ) -> GenerationResult:
+        stored_asset, raw_asset_metadata = await self._store_generated_result_from_openai_payload(
+            data=data,
+            kind="fusion",
+            model=model.id,
+            preferred_name=preferred_name,
+        )
+        result = GenerationResult(
+            job_id=self._extract_job_id(data),
+            status="completed" if stored_asset["access_url"] else "failed",
+            provider=model.provider,
+            model=model.id,
+            image_url=stored_asset["access_url"],
+            message="Fusion generation completed." if stored_asset["access_url"] else "Fusion returned no asset.",
+            raw_response=data,
+        )
+        if result.image_url:
+            history_metadata: dict[str, object] = {
+                "upstream_platform": upstream_platform,
+                "upstream_model": model.upstream_model_id,
+                **self._build_fusion_history_metadata(metadata),
+                "negative_prompt": metadata.negative_prompt,
+                "strength": metadata.strength,
+                **stored_asset["metadata"],
+                **raw_asset_metadata,
+            }
+            if upstream_api:
+                history_metadata["upstream_api"] = upstream_api
+            self._persist_history(
+                kind="fusion",
+                title=self._history_title_for_kind("fusion"),
+                model_id=model.id,
+                provider=model.provider.value,
+                status=result.status,
+                prompt=prompt,
+                job_id=result.job_id,
+                image_url=result.image_url,
+                storage_url=stored_asset["storage_url"],
+                metadata=history_metadata,
+            )
+        return result
+
+    async def _finalize_openai_edit_reference_result(
+        self,
+        *,
+        data: dict[str, Any],
+        metadata: ReferenceImageRequestMetadata,
+        model: ImageModelConfig,
+        prompt: str,
+        upstream_platform: str,
+        preferred_name: str | None,
+        upstream_api: str | None = None,
+    ) -> GenerationResult:
+        stored_asset, raw_asset_metadata = await self._store_generated_result_from_openai_payload(
+            data=data,
+            kind=metadata.feature,
+            model=model.id,
+            preferred_name=preferred_name,
+        )
+        result = GenerationResult(
+            job_id=self._extract_job_id(data),
+            status="completed" if stored_asset["access_url"] else "failed",
+            provider=model.provider,
+            model=model.id,
+            image_url=stored_asset["access_url"],
+            revised_prompt=prompt,
+            message="Reference image transform completed." if stored_asset["access_url"] else "Reference image transform returned no asset.",
+            raw_response=data,
+        ).model_copy(update=self._build_reference_result_update(metadata))
+        if result.image_url:
+            history_metadata: dict[str, object] = {
+                "upstream_platform": upstream_platform,
+                "upstream_model": model.upstream_model_id,
+                "original_prompt": metadata.prompt,
+                **stored_asset["metadata"],
+                **raw_asset_metadata,
+                **self._build_reference_history_metadata(metadata),
+            }
+            if upstream_api:
+                history_metadata["upstream_api"] = upstream_api
+            self._persist_history(
+                kind=self._map_feature_to_history_kind(metadata.feature),
+                title=self._feature_title(metadata.feature, model.label),
+                model_id=model.id,
+                provider=model.provider.value,
+                status=result.status,
+                prompt=prompt,
+                job_id=result.job_id,
+                image_url=result.image_url,
+                storage_url=stored_asset["storage_url"],
+                metadata=history_metadata,
+            )
+        return result
+
+    async def _finalize_gemini_text_result(
+        self,
+        *,
+        data: dict[str, Any],
+        model: ImageModelConfig,
+        prompt: str,
+        aspect_ratio: str,
+        image_size: str,
+        upstream_platform: str | None = None,
+    ) -> GenerationResult:
+        stored_asset = await self._store_gemini_result_asset(
+            data=data,
+            kind="text_to_image",
+            model=model.id,
+        )
+        result = GenerationResult(
+            job_id=None,
+            status="completed",
+            provider=model.provider,
+            model=model.id,
+            image_url=stored_asset["access_url"],
+            revised_prompt=self._extract_revised_prompt(data),
+            message="Image generation completed.",
+            raw_response=data,
+        )
+        history_metadata: dict[str, object] = {
+            "aspect_ratio": aspect_ratio,
+            "image_size": image_size,
+            **stored_asset["metadata"],
+        }
+        if upstream_platform:
+            history_metadata["upstream_platform"] = upstream_platform
+        self._persist_history(
+            kind="text_to_image",
+            title=self._history_title_for_kind("text_to_image"),
+            model_id=model.id,
+            provider=model.provider.value,
+            status=result.status,
+            prompt=prompt,
+            image_url=result.image_url,
+            storage_url=stored_asset["storage_url"],
+            metadata=history_metadata,
+        )
+        return result
+
+    async def _finalize_gemini_fusion_result(
+        self,
+        *,
+        data: dict[str, Any],
+        metadata: FusionRequestMetadata,
+        model: ImageModelConfig,
+        prompt: str,
+        preferred_name: str | None,
+        upstream_platform: str | None = None,
+    ) -> GenerationResult:
+        stored_asset = await self._store_gemini_result_asset(
+            data=data,
+            kind="fusion",
+            model=model.id,
+            preferred_name=preferred_name,
+        )
+        result = GenerationResult(
+            job_id=None,
+            status="completed",
+            provider=model.provider,
+            model=model.id,
+            image_url=stored_asset["access_url"],
+            revised_prompt=self._extract_revised_prompt(data),
+            message="Fusion generation completed.",
+            raw_response=data,
+        )
+        history_metadata: dict[str, object] = {
+            **self._build_fusion_history_metadata(metadata),
+            **stored_asset["metadata"],
+        }
+        if upstream_platform:
+            history_metadata["upstream_platform"] = upstream_platform
+            history_metadata["negative_prompt"] = metadata.negative_prompt
+            history_metadata["strength"] = metadata.strength
+        self._persist_history(
+            kind="fusion",
+            title=self._history_title_for_kind("fusion"),
+            model_id=model.id,
+            provider=model.provider.value,
+            status=result.status,
+            prompt=prompt,
+            image_url=result.image_url,
+            storage_url=stored_asset["storage_url"],
+            metadata=history_metadata,
+        )
+        return result
+
+    async def _finalize_gemini_reference_result(
+        self,
+        *,
+        data: dict[str, Any],
+        metadata: ReferenceImageRequestMetadata,
+        model: ImageModelConfig,
+        prompt: str,
+        preferred_name: str | None,
+        upstream_platform: str | None = None,
+    ) -> GenerationResult:
+        stored_asset = await self._store_gemini_result_asset(
+            data=data,
+            kind=metadata.feature,
+            model=model.id,
+            preferred_name=preferred_name,
+        )
+        result = GenerationResult(
+            job_id=None,
+            status="completed",
+            provider=model.provider,
+            model=model.id,
+            image_url=stored_asset["access_url"],
+            revised_prompt=self._extract_revised_prompt(data),
+            message="Reference image transform completed.",
+            raw_response=data,
+        ).model_copy(update=self._build_reference_result_update(metadata))
+        history_metadata: dict[str, object] = {
+            **stored_asset["metadata"],
+            **self._build_reference_history_metadata(metadata),
+        }
+        if upstream_platform:
+            history_metadata["upstream_platform"] = upstream_platform
+        self._persist_history(
+            kind=self._map_feature_to_history_kind(metadata.feature),
+            title=self._feature_title(metadata.feature, model.label),
+            model_id=model.id,
+            provider=model.provider.value,
+            status=result.status,
+            prompt=prompt,
+            image_url=result.image_url,
+            storage_url=stored_asset["storage_url"],
+            metadata=history_metadata,
+        )
+        return result
 
     def _map_feature_to_history_kind(self, feature: str) -> str:
         feature_to_kind = {
@@ -2840,44 +2025,6 @@ class AIService:
             detail="Prepared PNG for GPT Image 2 exceeds the 4MB upstream limit.",
         )
 
-    def _resolve_wuyin_reference_urls(self, items: list[object]) -> list[str]:
-        resolved: list[str] = []
-        for item in items:
-            payload = item.model_dump() if hasattr(item, "model_dump") else item if isinstance(item, dict) else None
-            if not isinstance(payload, dict):
-                continue
-            storage_url = payload.get("storage_url")
-            preview_url = payload.get("preview_url") or payload.get("source_image_url")
-            candidate = storage_url if isinstance(storage_url, str) and storage_url else preview_url
-            if not isinstance(candidate, str) or not candidate:
-                continue
-            resolved.append(self._build_wuyin_accessible_url(candidate))
-        return resolved
-
-    def _build_wuyin_accessible_url(self, candidate: str) -> str:
-        if candidate.startswith(("http://", "https://")):
-            return candidate
-
-        if candidate.startswith("/api/v1/assets/content"):
-            parsed = urlparse(candidate)
-            nested_storage_url = parse_qs(parsed.query).get("storage_url", [None])[0]
-            if nested_storage_url:
-                return self._build_wuyin_accessible_url(nested_storage_url)
-
-        generated = self.storage_service.generate_access_url(candidate) if self._is_custom_storage_url(candidate) else candidate
-        if isinstance(generated, str) and generated.startswith(("http://", "https://")):
-            return generated
-
-        public_base_url = (self.settings.public_base_url or "").strip().rstrip("/")
-        if not public_base_url:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="APP_PUBLIC_BASE_URL is required for GPT Image 2 reference-image generation.",
-            )
-        if not generated.startswith("/"):
-            generated = f"/{generated}"
-        return f"{public_base_url}{generated}"
-
     async def _store_generated_asset(
         self,
         *,
@@ -2997,6 +2144,35 @@ class AIService:
             name_suffix=name_suffix,
         )
         return stored_asset, {"upstream_response_format": "url", "upstream_image_url": image_url}
+
+    async def _store_gemini_result_asset(
+        self,
+        *,
+        data: dict[str, Any],
+        kind: str,
+        model: str,
+        preferred_name: str | None = None,
+        name_suffix: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            image_bytes, content_type = self._extract_inline_image(data)
+        except HTTPException:
+            image_url = self._extract_image_url(data)
+            return await self._store_generated_asset(
+                image_url=image_url,
+                kind=kind,
+                model=model,
+                preferred_name=preferred_name,
+                name_suffix=name_suffix,
+            )
+        return await self._store_generated_binary_asset(
+            image_bytes=image_bytes,
+            content_type=content_type,
+            kind=kind,
+            model=model,
+            preferred_name=preferred_name,
+            name_suffix=name_suffix,
+        )
 
     async def _store_generated_binary_asset(
         self,

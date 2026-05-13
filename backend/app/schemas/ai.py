@@ -11,11 +11,9 @@ class FusionMode(str, Enum):
 
 
 class ProviderType(str, Enum):
-    flux = "flux"
     gemini = "gemini"
     apiyi = "apiyi"
     closeai = "closeai"
-    wuyin = "wuyin"
 
 
 class FeatureDefinition(BaseModel):

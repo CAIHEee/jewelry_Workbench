@@ -4,7 +4,7 @@ from app.schemas.ai import ProviderType
 
 
 @dataclass(frozen=True)
-class TTAPIModelConfig:
+class ImageModelConfig:
     id: str
     label: str
     provider: ProviderType
@@ -16,8 +16,8 @@ class TTAPIModelConfig:
     pricing_hint: str
 
 
-MODEL_CATALOG: dict[str, TTAPIModelConfig] = {
-    "gpt-image-2-all-apiyi": TTAPIModelConfig(
+MODEL_CATALOG: dict[str, ImageModelConfig] = {
+    "gpt-image-2-all-apiyi": ImageModelConfig(
         id="gpt-image-2-all-apiyi",
         label="APIYI · GPT Image 2 VIP",
         provider=ProviderType.apiyi,
@@ -28,18 +28,7 @@ MODEL_CATALOG: dict[str, TTAPIModelConfig] = {
         supports_reference_images=True,
         pricing_hint="GPT Image 2 VIP via APIYI image edits",
     ),
-    "multi-view-few-shot-apiyi": TTAPIModelConfig(
-        id="multi-view-few-shot-apiyi",
-        label="APIYI · Multi-View Few-Shot",
-        provider=ProviderType.apiyi,
-        category="image_generation",
-        upstream_model_id="gpt-image-2",
-        supports_text_to_image=False,
-        supports_multi_image_fusion=False,
-        supports_reference_images=True,
-        pricing_hint="Multi-view generation with fixed few-shot context via APIYI images/edits",
-    ),
-    "gemini-3-pro-image-preview-apiyi": TTAPIModelConfig(
+    "gemini-3-pro-image-preview-apiyi": ImageModelConfig(
         id="gemini-3-pro-image-preview-apiyi",
         label="APIYI · Nano Banana Pro",
         provider=ProviderType.gemini,
@@ -50,7 +39,7 @@ MODEL_CATALOG: dict[str, TTAPIModelConfig] = {
         supports_reference_images=True,
         pricing_hint="Nano Banana Pro via APIYI Gemini image edit",
     ),
-    "gpt-image-2-closeai": TTAPIModelConfig(
+    "gpt-image-2-closeai": ImageModelConfig(
         id="gpt-image-2-closeai",
         label="CloseAI · GPT Image 2",
         provider=ProviderType.closeai,
@@ -61,7 +50,7 @@ MODEL_CATALOG: dict[str, TTAPIModelConfig] = {
         supports_reference_images=True,
         pricing_hint="GPT Image 2 via CloseAI OpenAI-compatible image edits",
     ),
-    "gemini-3.1-flash-image-preview": TTAPIModelConfig(
+    "gemini-3.1-flash-image-preview": ImageModelConfig(
         id="gemini-3.1-flash-image-preview",
         label="APIYI · Nano Banana 2",
         provider=ProviderType.gemini,
