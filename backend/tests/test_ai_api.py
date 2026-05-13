@@ -288,6 +288,102 @@ def test_closeai_multi_view_uses_qwen_prompt_stages(monkeypatch) -> None:
     assert metadata.model == "gpt-image-2-closeai"
 
 
+def test_apiyi_gemini_multi_view_uses_qwen_prompt_stages(monkeypatch) -> None:
+    service = AIService()
+    stages: list[str] = []
+    captured: dict[str, object] = {}
+
+    async def fake_generate_multi_view_with_qwen_prompt(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+        callback = kwargs["stage_callback"]
+        callback("qwen_prompt")
+        callback("image_generation")
+        return GenerationResult(
+            status="completed",
+            provider=service._get_model_or_404("gemini-3-pro-image-preview-apiyi").provider,
+            model="gemini-3-pro-image-preview-apiyi",
+            image_url="/api/v1/assets/content?storage_url=local://nano-banana-pro-result.png",
+            revised_prompt="Qwen 反推后的 Nano Banana Pro 多视图提示词",
+            message="Reference image transform completed.",
+        )
+
+    monkeypatch.setattr(service, "_generate_multi_view_with_qwen_prompt", fake_generate_multi_view_with_qwen_prompt)
+
+    async def run_request() -> None:
+        upload = UploadFile(filename="source.png", file=BytesIO(b"source"), headers={"content-type": "image/png"})
+        try:
+            await service.generate_multi_view(
+                file=upload,
+                metadata=ReferenceImageRequestMetadata(
+                    model="gemini-3-pro-image-preview-apiyi",
+                    prompt="默认多视图规则",
+                    feature="multi_view",
+                    filename="source.png",
+                    image_count=1,
+                ),
+                current_user=User(id="00000000-0000-0000-0000-000000000001", username="root", display_name="root"),
+                stage_callback=stages.append,
+            )
+        finally:
+            upload.file.close()
+
+    asyncio.run(run_request())
+
+    assert stages == ["qwen_prompt", "image_generation"]
+    metadata = captured["metadata"]
+    assert isinstance(metadata, ReferenceImageRequestMetadata)
+    assert metadata.model == "gemini-3-pro-image-preview-apiyi"
+
+
+def test_multi_view_qwen_prompt_dispatches_to_apiyi_gemini(monkeypatch) -> None:
+    service = AIService()
+    current_user = User(id="00000000-0000-0000-0000-000000000001", username="root", display_name="root")
+    captured: dict[str, object] = {}
+
+    async def fake_build_qwen_multi_view_prompt(**kwargs):  # noqa: ANN003
+        captured["prompt_metadata"] = kwargs["metadata"]
+        return "Qwen 反推后的 Nano Banana Pro 多视图提示词"
+
+    async def fake_transform_with_gemini_apiyi(**kwargs):  # noqa: ANN003
+        captured["transform_kwargs"] = kwargs
+        return GenerationResult(
+            status="completed",
+            provider=service._get_model_or_404("gemini-3-pro-image-preview-apiyi").provider,
+            model="gemini-3-pro-image-preview-apiyi",
+            image_url="/api/v1/assets/content?storage_url=local://nano-banana-pro-result.png",
+            revised_prompt=kwargs["metadata"].prompt,
+            message="Reference image transform completed.",
+        )
+
+    monkeypatch.setattr(service, "_build_qwen_multi_view_prompt", fake_build_qwen_multi_view_prompt)
+    monkeypatch.setattr(service, "_transform_with_gemini_apiyi", fake_transform_with_gemini_apiyi)
+
+    async def run_request() -> GenerationResult:
+        upload = UploadFile(filename="source.png", file=BytesIO(b"source"), headers={"content-type": "image/png"})
+        try:
+            return await service._generate_multi_view_with_qwen_prompt(
+                file=upload,
+                metadata=ReferenceImageRequestMetadata(
+                    model="gemini-3-pro-image-preview-apiyi",
+                    prompt="默认多视图规则",
+                    feature="multi_view",
+                    filename="source.png",
+                    image_count=1,
+                ),
+                current_user=current_user,
+            )
+        finally:
+            upload.file.close()
+
+    result = asyncio.run(run_request())
+
+    assert result.model == "gemini-3-pro-image-preview-apiyi"
+    transform_kwargs = captured["transform_kwargs"]
+    assert transform_kwargs["model"].id == "gemini-3-pro-image-preview-apiyi"
+    assert transform_kwargs["metadata"].prompt == "Qwen 反推后的 Nano Banana Pro 多视图提示词"
+    assert transform_kwargs["metadata"].image_count == 1
+
+
 def test_apiyi_gemini_uses_upstream_model_id(monkeypatch) -> None:
     service = AIService()
     monkeypatch.setattr(service, "_require_apiyi_api_key", lambda: "test-apiyi-key")

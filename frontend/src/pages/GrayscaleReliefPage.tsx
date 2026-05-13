@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 
 import { AssetSourcePicker } from "../components/AssetSourcePicker";
 import { FloatingToast } from "../components/FloatingToast";
-import { GenerationTimeInfo } from "../components/GenerationTimeInfo";
 import { GenerationProgress } from "../components/GenerationProgress";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
+import { PreviewTimer } from "../components/PreviewTimer";
 import { ResultPreviewModal } from "../components/ResultPreviewModal";
 import { getPromptTemplatesByModule } from "../data/promptTemplates";
 import { useModelCatalog } from "../hooks/useModelCatalog";
@@ -57,7 +57,7 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
   const [error, setError] = useState<string | null>(null);
   const [progressState, setProgressState] = useState<"idle" | "running" | "success" | "error">("idle");
   const [jobProgress, setJobProgress] = useState<GenerationJobProgress | null>(null);
-  const [currentGenerationTiming, setCurrentGenerationTiming] = useState<{ startedAt: string; completedAt: string | null; elapsedMs: number | null } | null>(null);
+  const [currentGenerationStartedAt, setCurrentGenerationStartedAt] = useState<string | null>(null);
 
   useEffect(() => {
     if (!models.length) {
@@ -81,9 +81,6 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
   const activeHistory = selectedHistory ?? (!result ? pageRuns[0] ?? null : null);
   const previewResultUrl = activeHistory?.imageUrl ?? result?.image_url ?? null;
   const previewSourceUrl = activeHistory?.sourceImageUrl ?? (uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? null);
-  const previewTiming = activeHistory
-    ? { startedAt: activeHistory.startedAt, completedAt: activeHistory.completedAt, elapsedMs: activeHistory.elapsedMs }
-    : currentGenerationTiming;
 
   useEffect(() => {
     return () => {
@@ -110,7 +107,7 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
     setLoading(true);
     setError(null);
     const startedAt = new Date().toISOString();
-    setCurrentGenerationTiming({ startedAt, completedAt: null, elapsedMs: null });
+    setCurrentGenerationStartedAt(startedAt);
     setProgressState("running");
     setJobProgress({ percent: 18, label: "灰度转换任务排队中..." });
 
@@ -138,9 +135,6 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
 
       setResult(response);
       setSelectedHistoryId(null);
-      const completedAt = new Date().toISOString();
-      const elapsedMs = Date.parse(completedAt) - Date.parse(startedAt);
-      setCurrentGenerationTiming({ startedAt, completedAt, elapsedMs });
       onRecordRun({
         kind: "grayscale_relief",
         title: "转灰度图",
@@ -149,9 +143,6 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
         status: response.status,
         imageUrl: response.image_url,
         sourceImageUrl: response.source_image_url ?? uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? null,
-        startedAt,
-        completedAt,
-        elapsedMs,
         prompt: defaultPrompt,
       });
       setJobProgress({ percent: 100, label: "已完成" });
@@ -159,9 +150,6 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
     } catch (submitError) {
       setLoading(false);
       setProgressState("error");
-      setCurrentGenerationTiming((current) =>
-        current ? { ...current, completedAt: new Date().toISOString(), elapsedMs: Date.now() - Date.parse(current.startedAt) } : current,
-      );
       setJobProgress({
         percent: 100,
         label: submitError instanceof Error ? submitError.message : "转灰度图失败",
@@ -217,8 +205,9 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
             <div className="stack-list preview-history-main">
               <details className="drawer-panel" open>
                 <summary className="drawer-summary compact-drawer-summary">
-                  <div>
+                  <div className="preview-summary-row">
                     <h4>结果预览</h4>
+                    <PreviewTimer startedAt={currentGenerationStartedAt} running={loading} />
                   </div>
                   <span className="drawer-hint">展开 / 收起</span>
                 </summary>
@@ -243,11 +232,6 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
                     >
                       {previewResultUrl ? <img className="generated-image image-fit-contain interactive-preview-image" src={previewResultUrl} alt="灰度结果" /> : <div className="grayscale-preview-card" />}
                     </div>
-                    <GenerationTimeInfo
-                      startedAt={previewTiming?.startedAt ?? null}
-                      completedAt={previewTiming?.completedAt ?? null}
-                      elapsedMs={previewTiming?.elapsedMs ?? null}
-                    />
                   </div>
                 </div>
               </details>

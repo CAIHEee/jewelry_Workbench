@@ -391,9 +391,10 @@ class AIService:
     ) -> GenerationResult:
         if metadata.feature != "multi_view":
             metadata = metadata.model_copy(update={"feature": "multi_view"})
+        model = self._get_model_or_404(metadata.model)
 
-        # 多视图统一走 Qwen 反推提示词，再交给 image2 图生图链路
-        if metadata.model in {"gpt-image-2-all-apiyi", "gpt-image-2-closeai"}:
+        # 多视图统一先走 Qwen 反推，再按当前模型供应商进入各自的图生图链路。
+        if model.supports_reference_images:
             return await self._generate_multi_view_with_qwen_prompt(
                 file=file,
                 files=files,
@@ -432,7 +433,7 @@ class AIService:
         source_image_url: str | None = None,
         source_image_urls: list[str] | None = None,
         stage_callback: Callable[[str], None] | None = None,
-    ) -> GenerationResult:
+        ) -> GenerationResult:
         """使用 Qwen3-VL 反推提示词，再用当前 image2 模型生成多视图。"""
         context_token = _request_user.set(current_user)
         stage_token = _job_stage_callback.set(stage_callback)
@@ -467,10 +468,27 @@ class AIService:
                     metadata=updated_metadata,
                     model=model,
                 )
-            return await self._transform_with_apiyi_gpt_image2_all(
-                files=[input_file],
-                metadata=updated_metadata,
-                model=model,
+            if self._use_apiyi():
+                if model.provider == ProviderType.gemini:
+                    return await self._transform_with_gemini_apiyi(
+                        files=[input_file],
+                        metadata=updated_metadata,
+                        model=model,
+                    )
+                return await self._transform_with_apiyi_gpt_image2_all(
+                    files=[input_file],
+                    metadata=updated_metadata,
+                    model=model,
+                )
+            if model.provider == ProviderType.gemini:
+                return await self._transform_with_gemini(
+                    files=[input_file],
+                    metadata=updated_metadata,
+                    model=model,
+                )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Model {metadata.model} does not support multi-view generation.",
             )
         finally:
             _job_stage_callback.reset(stage_token)

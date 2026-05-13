@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AutoResizeTextarea } from "../components/AutoResizeTextarea";
 import { FloatingToast } from "../components/FloatingToast";
-import { GenerationTimeInfo } from "../components/GenerationTimeInfo";
 import { GenerationProgress } from "../components/GenerationProgress";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
+import { PreviewTimer } from "../components/PreviewTimer";
 import { PromptTemplateImporter } from "../components/PromptTemplateImporter";
 import { ResultPreviewModal } from "../components/ResultPreviewModal";
 import { getPromptTemplatesByModule } from "../data/promptTemplates";
@@ -55,7 +55,7 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
   const [loading, setLoading] = useState(false);
   const [progressState, setProgressState] = useState<"idle" | "running" | "success" | "error">("idle");
   const [jobProgress, setJobProgress] = useState<GenerationJobProgress | null>(null);
-  const [currentGenerationTiming, setCurrentGenerationTiming] = useState<{ startedAt: string; completedAt: string | null; elapsedMs: number | null } | null>(null);
+  const [currentGenerationStartedAt, setCurrentGenerationStartedAt] = useState<string | null>(null);
 
   useEffect(() => {
     if (!models.length) {
@@ -81,9 +81,6 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
   const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
   const activeHistory = selectedHistory ?? (!result ? pageRuns[0] ?? null : null);
   const previewResultUrl = activeHistory?.imageUrl ?? result?.image_url ?? null;
-  const previewTiming = activeHistory
-    ? { startedAt: activeHistory.startedAt, completedAt: activeHistory.completedAt, elapsedMs: activeHistory.elapsedMs }
-    : currentGenerationTiming;
 
   async function handleGenerate() {
     if (loading) {
@@ -101,7 +98,7 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
     setLoading(true);
     setError(null);
     const startedAt = new Date().toISOString();
-    setCurrentGenerationTiming({ startedAt, completedAt: null, elapsedMs: null });
+    setCurrentGenerationStartedAt(startedAt);
     setProgressState("running");
     setJobProgress({ percent: 18, label: "文生图任务排队中..." });
 
@@ -121,9 +118,6 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
 
       setResult(response);
       setSelectedHistoryId(null);
-      const completedAt = new Date().toISOString();
-      const elapsedMs = Date.parse(completedAt) - Date.parse(startedAt);
-      setCurrentGenerationTiming({ startedAt, completedAt, elapsedMs });
       onRecordRun({
         kind: "text_to_image",
         title: "文生图",
@@ -131,9 +125,6 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
         provider: response.provider,
         status: response.status,
         imageUrl: response.image_url,
-        startedAt,
-        completedAt,
-        elapsedMs,
         prompt: prompt.trim(),
       });
       setJobProgress({ percent: 100, label: "已完成" });
@@ -141,9 +132,6 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
     } catch (submitError) {
       setLoading(false);
       setProgressState("error");
-      setCurrentGenerationTiming((current) =>
-        current ? { ...current, completedAt: new Date().toISOString(), elapsedMs: Date.now() - Date.parse(current.startedAt) } : current,
-      );
       setJobProgress({
         percent: 100,
         label: submitError instanceof Error ? submitError.message : "文生图生成失败",
@@ -226,8 +214,9 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
             <div className="stack-list preview-history-main">
               <details className="drawer-panel" open>
                 <summary className="drawer-summary compact-drawer-summary">
-                  <div>
+                  <div className="preview-summary-row">
                     <h4>结果预览</h4>
+                    <PreviewTimer startedAt={currentGenerationStartedAt} running={loading} />
                   </div>
                   <span className="drawer-hint">展开 / 收起</span>
                 </summary>
@@ -254,11 +243,6 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
                         <p>提交任务后，这里会显示返回图片。</p>
                       </div>
                     )}
-                    <GenerationTimeInfo
-                      startedAt={previewTiming?.startedAt ?? null}
-                      completedAt={previewTiming?.completedAt ?? null}
-                      elapsedMs={previewTiming?.elapsedMs ?? null}
-                    />
                   </div>
                 </div>
               </details>

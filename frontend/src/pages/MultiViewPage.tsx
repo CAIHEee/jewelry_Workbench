@@ -3,9 +3,9 @@ import { useEffect, useMemo, useState } from "react";
 import { AssetSourcePicker } from "../components/AssetSourcePicker";
 import { AutoResizeTextarea } from "../components/AutoResizeTextarea";
 import { FloatingToast } from "../components/FloatingToast";
-import { GenerationTimeInfo } from "../components/GenerationTimeInfo";
 import { GenerationProgress } from "../components/GenerationProgress";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
+import { PreviewTimer } from "../components/PreviewTimer";
 import { ResultPreviewModal } from "../components/ResultPreviewModal";
 import { useModelCatalog } from "../hooks/useModelCatalog";
 import { submitMultiViewGeneration } from "../services/api";
@@ -67,7 +67,7 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
   const [error, setError] = useState<string | null>(null);
   const [progressState, setProgressState] = useState<"idle" | "running" | "success" | "error">("idle");
   const [jobProgress, setJobProgress] = useState<GenerationJobProgress | null>(null);
-  const [currentGenerationTiming, setCurrentGenerationTiming] = useState<{ startedAt: string; completedAt: string | null; elapsedMs: number | null } | null>(null);
+  const [currentGenerationStartedAt, setCurrentGenerationStartedAt] = useState<string | null>(null);
 
   useEffect(() => {
     if (!models.length) return;
@@ -89,9 +89,6 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
   const activeHistory = selectedHistory ?? (results.length === 0 ? pageRuns[0] ?? null : null);
   const latestResult = results[0] ?? null;
   const previewResultUrl = activeHistory?.imageUrl ?? latestResult?.image_url ?? null;
-  const previewTiming = activeHistory
-    ? { startedAt: activeHistory.startedAt, completedAt: activeHistory.completedAt, elapsedMs: activeHistory.elapsedMs }
-    : currentGenerationTiming;
   const previewSourceUrl = activeHistory?.sourceImageUrl ?? (uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? null);
   const selectedAssetRefs = useMemo(
     () =>
@@ -139,7 +136,7 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
     setResults([]);
     setSelectedHistoryId(null);
     const startedAt = new Date().toISOString();
-    setCurrentGenerationTiming({ startedAt, completedAt: null, elapsedMs: null });
+    setCurrentGenerationStartedAt(startedAt);
     setProgressState("running");
     setJobProgress({ percent: 18, label: "多视图任务排队中..." });
 
@@ -176,9 +173,6 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
       }
 
       setResults([...validResponses].reverse());
-      const completedAt = new Date().toISOString();
-      const elapsedMs = Date.parse(completedAt) - Date.parse(startedAt);
-      setCurrentGenerationTiming({ startedAt, completedAt, elapsedMs });
       setJobProgress({ percent: 100, label: generationCount > 1 ? `已完成 ${validResponses.length}/${generationCount} 张` : "已完成" });
       setProgressState("success");
       await onRefreshHistory?.();
@@ -191,9 +185,6 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
     } catch (submitError) {
       setLoading(false);
       setProgressState("error");
-      setCurrentGenerationTiming((current) =>
-        current ? { ...current, completedAt: new Date().toISOString(), elapsedMs: Date.now() - Date.parse(current.startedAt) } : current,
-      );
       setJobProgress({
         percent: 100,
         label: submitError instanceof Error ? submitError.message : "多视图生成失败",
@@ -282,8 +273,9 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
             <div className="stack-list preview-history-main multi-view-preview-main">
               <details className="drawer-panel" open>
                 <summary className="drawer-summary compact-drawer-summary">
-                  <div>
+                  <div className="preview-summary-row">
                     <h4>结果预览</h4>
+                    <PreviewTimer startedAt={currentGenerationStartedAt} running={loading} />
                   </div>
                   <span className="drawer-hint">展开 / 收起</span>
                 </summary>
@@ -298,11 +290,6 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
                     >
                       {previewResultUrl ? <img className="generated-image image-fit-contain interactive-preview-image" src={previewResultUrl} alt="多视图结果" /> : <div className="multi-view-single-card">四宫格结果图</div>}
                     </div>
-                    <GenerationTimeInfo
-                      startedAt={previewTiming?.startedAt ?? null}
-                      completedAt={previewTiming?.completedAt ?? null}
-                      elapsedMs={previewTiming?.elapsedMs ?? null}
-                    />
                   </div>
                 </div>
               </details>

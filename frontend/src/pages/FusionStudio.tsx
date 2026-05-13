@@ -3,9 +3,9 @@ import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { AutoResizeTextarea } from "../components/AutoResizeTextarea";
 import { AssetSourcePicker } from "../components/AssetSourcePicker";
 import { FloatingToast } from "../components/FloatingToast";
-import { GenerationTimeInfo } from "../components/GenerationTimeInfo";
 import { GenerationProgress } from "../components/GenerationProgress";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
+import { PreviewTimer } from "../components/PreviewTimer";
 import { PromptTemplateImporter } from "../components/PromptTemplateImporter";
 import { ResultPreviewModal } from "../components/ResultPreviewModal";
 import { getPromptTemplatesByModule } from "../data/promptTemplates";
@@ -62,7 +62,7 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
   const [error, setError] = useState<string | null>(null);
   const [progressState, setProgressState] = useState<"idle" | "running" | "success" | "error">("idle");
   const [jobProgress, setJobProgress] = useState<GenerationJobProgress | null>(null);
-  const [currentGenerationTiming, setCurrentGenerationTiming] = useState<{ startedAt: string; completedAt: string | null; elapsedMs: number | null } | null>(null);
+  const [currentGenerationStartedAt, setCurrentGenerationStartedAt] = useState<string | null>(null);
 
   useEffect(() => {
     if (!models.length) {
@@ -101,9 +101,6 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
   const activeHistory = selectedHistory ?? (!result ? pageRuns[0] ?? null : null);
   const previewResultUrl = activeHistory?.imageUrl ?? result?.image_url ?? null;
   const previewSourceUrl = activeHistory?.sourceImages?.[activeHistory.primaryImageIndex ?? 0] ?? activeHistory?.sourceImageUrl ?? selectedInputItems[primaryImageIndex]?.previewUrl ?? null;
-  const previewTiming = activeHistory
-    ? { startedAt: activeHistory.startedAt, completedAt: activeHistory.completedAt, elapsedMs: activeHistory.elapsedMs }
-    : currentGenerationTiming;
 
   useEffect(() => {
     return () => {
@@ -140,7 +137,7 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
 
     setIsSubmitting(true);
     const startedAt = new Date().toISOString();
-    setCurrentGenerationTiming({ startedAt, completedAt: null, elapsedMs: null });
+    setCurrentGenerationStartedAt(startedAt);
     setProgressState("running");
     setJobProgress({ percent: 18, label: "多图融合任务排队中..." });
 
@@ -170,9 +167,6 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
 
       setResult(response);
       setSelectedHistoryId(null);
-      const completedAt = new Date().toISOString();
-      const elapsedMs = Date.parse(completedAt) - Date.parse(startedAt);
-      setCurrentGenerationTiming({ startedAt, completedAt, elapsedMs });
       onRecordRun({
         kind: "fusion",
         title: "多图融合",
@@ -183,9 +177,6 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
         sourceImageUrl: selectedInputItems[primaryImageIndex]?.previewUrl ?? null,
         sourceImages: selectedInputItems.map((item) => item.previewUrl).filter((item): item is string => Boolean(item)),
         primaryImageIndex,
-        startedAt,
-        completedAt,
-        elapsedMs,
         prompt: prompt.trim(),
       });
       setJobProgress({ percent: 100, label: "已完成" });
@@ -193,9 +184,6 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
     } catch (submitError) {
       setIsSubmitting(false);
       setProgressState("error");
-      setCurrentGenerationTiming((current) =>
-        current ? { ...current, completedAt: new Date().toISOString(), elapsedMs: Date.now() - Date.parse(current.startedAt) } : current,
-      );
       setJobProgress({
         percent: 100,
         label: submitError instanceof Error ? submitError.message : "多图融合失败",
@@ -316,8 +304,9 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
             <div className="stack-list preview-history-main">
               <details className="drawer-panel" open>
                 <summary className="drawer-summary compact-drawer-summary">
-                  <div>
+                  <div className="preview-summary-row">
                     <h4>结果预览</h4>
+                    <PreviewTimer startedAt={currentGenerationStartedAt} running={isSubmitting} />
                   </div>
                   <span className="drawer-hint">展开 / 收起</span>
                 </summary>
@@ -344,11 +333,6 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
                         >
                           {previewResultUrl ? <img className="generated-image image-fit-contain interactive-preview-image" src={previewResultUrl} alt="融合结果" /> : <div className="compare-card after" />}
                         </div>
-                        <GenerationTimeInfo
-                          startedAt={previewTiming?.startedAt ?? null}
-                          completedAt={previewTiming?.completedAt ?? null}
-                          elapsedMs={previewTiming?.elapsedMs ?? null}
-                        />
                       </div>
 
                     </div>

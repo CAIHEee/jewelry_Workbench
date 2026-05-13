@@ -13,8 +13,6 @@ export interface PersistedHistoryItem {
   owner_username: string | null;
   can_delete: boolean;
   created_at: string;
-  started_at?: string | null;
-  completed_at?: string | null;
 }
 
 export interface PersistedHistoryResponse {

@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import { AssetSourcePicker } from "../components/AssetSourcePicker";
 import { FloatingToast } from "../components/FloatingToast";
-import { GenerationTimeInfo } from "../components/GenerationTimeInfo";
 import { GenerationProgress } from "../components/GenerationProgress";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
+import { PreviewTimer } from "../components/PreviewTimer";
 import { ResultPreviewModal } from "../components/ResultPreviewModal";
 import { splitMultiViewImage, uploadInputAsset } from "../services/api";
 import type { GenerationJobProgress, MultiViewSplitItem, MultiViewSplitResponse } from "../types/fusion";
@@ -69,7 +69,7 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
   const [activeTab, setActiveTab] = useState<SplitPreviewTab>("source");
   const [progressState, setProgressState] = useState<"idle" | "running" | "success" | "error">("idle");
   const [jobProgress, setJobProgress] = useState<GenerationJobProgress | null>(null);
-  const [currentGenerationTiming, setCurrentGenerationTiming] = useState<{ startedAt: string; completedAt: string | null; elapsedMs: number | null } | null>(null);
+  const [currentGenerationStartedAt, setCurrentGenerationStartedAt] = useState<string | null>(null);
 
   const uploadedPreviewUrl = useMemo(() => (files[0] ? URL.createObjectURL(files[0]) : null), [files]);
 
@@ -97,9 +97,6 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
 
   const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
   const activeHistory = selectedHistory ?? (!splitResult ? pageRuns[0] ?? null : null);
-  const previewTiming = activeHistory
-    ? { startedAt: activeHistory.startedAt, completedAt: activeHistory.completedAt, elapsedMs: activeHistory.elapsedMs }
-    : currentGenerationTiming;
   const hasCurrentSourceSelection = Boolean(uploadedPreviewUrl || selectedAssets[0]);
   const sourcePreviewUrl =
     uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? activeHistory?.sourceImageUrl ?? null;
@@ -146,7 +143,7 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
     setLoading(true);
     setError(null);
     const startedAt = new Date().toISOString();
-    setCurrentGenerationTiming({ startedAt, completedAt: null, elapsedMs: null });
+    setCurrentGenerationStartedAt(startedAt);
     setProgressState("running");
     setJobProgress({ percent: 18, label: "多视图切图任务排队中..." });
 
@@ -175,9 +172,6 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
       setSplitResult(response);
       setSelectedHistoryId(null);
       setActiveTab("result");
-      const completedAt = new Date().toISOString();
-      const elapsedMs = Date.parse(completedAt) - Date.parse(startedAt);
-      setCurrentGenerationTiming({ startedAt, completedAt, elapsedMs });
       setJobProgress({ percent: 100, label: "已完成" });
       setProgressState("success");
       onRecordRun?.({
@@ -190,9 +184,6 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
         sourceImageUrl,
         sourceImages: response.items.map((item) => item.image_url).filter((item): item is string => Boolean(item)),
         primaryImageIndex: 0,
-        startedAt,
-        completedAt,
-        elapsedMs,
         splitItems: response.items.map((item) => ({
           view: item.view,
           imageUrl: item.image_url,
@@ -205,9 +196,6 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
     } catch (splitError) {
       setLoading(false);
       setProgressState("error");
-      setCurrentGenerationTiming((current) =>
-        current ? { ...current, completedAt: new Date().toISOString(), elapsedMs: Date.now() - Date.parse(current.startedAt) } : current,
-      );
       setJobProgress({
         percent: 100,
         label: splitError instanceof Error ? splitError.message : "多视图切图失败。",
@@ -339,6 +327,7 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
                         <h4>切图结果</h4>
                         <p className="muted">以下展示四个切图结果，点击任意图片可进入灯箱放大预览。</p>
                       </div>
+                      <PreviewTimer startedAt={currentGenerationStartedAt} running={loading} />
                     </div>
 
                     {activeSplitItems.length ? (
@@ -375,11 +364,6 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
                             </div>
                           ))}
                         </div>
-                        <GenerationTimeInfo
-                          startedAt={previewTiming?.startedAt ?? null}
-                          completedAt={previewTiming?.completedAt ?? null}
-                          elapsedMs={previewTiming?.elapsedMs ?? null}
-                        />
                       </>
                     ) : (
                       <div className="panel-subcard compact split-empty-state">

@@ -4,7 +4,6 @@ import remarkGfm from "remark-gfm";
 
 import { AssetSourcePicker } from "../components/AssetSourcePicker";
 import { FloatingToast } from "../components/FloatingToast";
-import { GenerationTimeInfo } from "../components/GenerationTimeInfo";
 import { LocalImageMarkupEditor } from "../components/LocalImageMarkupEditor";
 import { ResultPreviewModal } from "../components/ResultPreviewModal";
 import {
@@ -57,9 +56,6 @@ interface ActiveGenerationPreview {
   sourceAssets: AgentAssetRef[];
   resultUrl: string | null;
   resultAsset: AgentAssetRef | null;
-  startedAt: string | null;
-  completedAt: string | null;
-  elapsedMs: number | null;
   errorMessage?: string | null;
 }
 
@@ -560,27 +556,11 @@ export function AgentPage({ assetItems }: AgentPageProps) {
         : pendingAction.source_image_urls.map((url) => ({ storage_url: url, preview_url: url })),
       resultUrl: null,
       resultAsset: null,
-      startedAt: null,
-      completedAt: null,
-      elapsedMs: null,
       errorMessage: null,
     });
     try {
       const initialJob = await fetchGenerationJob(pendingAction.result_job_id);
       setJobProgress(buildGenerationJobProgress(initialJob));
-      setActiveGeneration((current) =>
-        current?.conversationId === conversationId
-          ? {
-              ...current,
-              startedAt: initialJob.started_at ?? initialJob.created_at ?? current.startedAt,
-              completedAt: initialJob.completed_at ?? current.completedAt,
-              elapsedMs:
-                initialJob.started_at && initialJob.completed_at
-                  ? Math.max(0, Date.parse(initialJob.completed_at) - Date.parse(initialJob.started_at))
-                  : current.elapsedMs,
-            }
-          : current,
-      );
       const result =
         initialJob.status === "succeeded" && initialJob.result
           ? (initialJob.result as unknown as GenerationResult | MultiViewSplitResponse)
@@ -601,15 +581,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       }
       setProgressState("success");
       setJobProgress({ percent: 100, label: "已完成" });
-      setActiveGeneration((current) =>
-        current?.conversationId === conversationId
-          ? {
-              ...current,
-              completedAt: new Date().toISOString(),
-              elapsedMs: current.startedAt ? Math.max(0, Date.now() - Date.parse(current.startedAt)) : current.elapsedMs,
-            }
-          : current,
-      );
+      setActiveGeneration((current) => (current?.conversationId === conversationId ? null : current));
       if (activeConversationIdRef.current === conversationId) {
         await loadConversation(conversationId);
       }
@@ -619,14 +591,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       setJobProgress({ percent: 100, label: message });
       setActiveGeneration((current) =>
         current?.conversationId === conversationId
-          ? {
-              ...current,
-              resultUrl: null,
-              resultAsset: null,
-              completedAt: new Date().toISOString(),
-              elapsedMs: current.startedAt ? Math.max(0, Date.now() - Date.parse(current.startedAt)) : current.elapsedMs,
-              errorMessage: message,
-            }
+          ? { ...current, resultUrl: null, resultAsset: null, errorMessage: message }
           : current,
       );
       setError(message);
@@ -886,9 +851,6 @@ export function AgentPage({ assetItems }: AgentPageProps) {
         : action.source_image_urls.map((url) => ({ storage_url: url, preview_url: url })),
       resultUrl: null,
       resultAsset: null,
-      startedAt: new Date().toISOString(),
-      completedAt: null,
-      elapsedMs: null,
       errorMessage: null,
     });
     setError(null);
@@ -917,15 +879,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       }
       setProgressState("success");
       setJobProgress({ percent: 100, label: "已完成" });
-      setActiveGeneration((current) =>
-        current?.conversationId === action.conversation_id
-          ? {
-              ...current,
-              completedAt: new Date().toISOString(),
-              elapsedMs: current.startedAt ? Math.max(0, Date.now() - Date.parse(current.startedAt)) : current.elapsedMs,
-            }
-          : current,
-      );
+      setActiveGeneration((current) => (current?.conversationId === action.conversation_id ? null : current));
       if (activeConversationIdRef.current === action.conversation_id) {
         await loadConversation(action.conversation_id);
       }
@@ -935,14 +889,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
       setJobProgress({ percent: 100, label: message });
       setActiveGeneration((current) =>
         current?.conversationId === action.conversation_id
-          ? {
-              ...current,
-              resultUrl: null,
-              resultAsset: null,
-              completedAt: new Date().toISOString(),
-              elapsedMs: current.startedAt ? Math.max(0, Date.now() - Date.parse(current.startedAt)) : current.elapsedMs,
-              errorMessage: message,
-            }
+          ? { ...current, resultUrl: null, resultAsset: null, errorMessage: message }
           : current,
       );
       setError(message);
@@ -1360,7 +1307,6 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                           ><DownloadIcon /></a>
                         </div>
                       </div>
-                      <GenerationTimeInfo startedAt={message.created_at} completedAt={message.created_at} elapsedMs={null} compact />
                     </div>
                   ) : (
                     <div className="agent-message-content">
@@ -1639,12 +1585,6 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                       ) : null}
                     </div>
                   </div>
-                  <GenerationTimeInfo
-                    startedAt={visibleActiveGeneration.startedAt}
-                    completedAt={visibleActiveGeneration.completedAt}
-                    elapsedMs={visibleActiveGeneration.elapsedMs}
-                    compact
-                  />
                 </div>
               </article>
             ) : null}
