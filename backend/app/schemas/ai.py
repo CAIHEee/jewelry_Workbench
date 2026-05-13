@@ -14,6 +14,7 @@ class ProviderType(str, Enum):
     flux = "flux"
     gemini = "gemini"
     apiyi = "apiyi"
+    closeai = "closeai"
     wuyin = "wuyin"
 
 

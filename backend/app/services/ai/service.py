@@ -211,6 +211,8 @@ class AIService:
 
             if model.provider == ProviderType.apiyi:
                 result = await self._fuse_with_apiyi_gpt_image2_all(files=submit_files, metadata=metadata, model=model)
+            elif model.provider == ProviderType.closeai:
+                result = await self._fuse_with_closeai_gpt_image2(files=submit_files, metadata=metadata, model=model)
             elif model.provider == ProviderType.wuyin:
                 result = await self._fuse_with_wuyin_gpt_image2(metadata=metadata, model=model)
             elif self._use_apiyi():
@@ -357,6 +359,8 @@ class AIService:
 
             if model.provider == ProviderType.apiyi:
                 return await self._transform_with_apiyi_gpt_image2_all(files=submit_files, metadata=metadata, model=model)
+            if model.provider == ProviderType.closeai:
+                return await self._transform_with_closeai_gpt_image2(files=submit_files, metadata=metadata, model=model)
             if model.provider == ProviderType.wuyin:
                 return await self._transform_with_wuyin_gpt_image2(metadata=metadata, model=model)
 
@@ -739,6 +743,14 @@ class AIService:
             )
         return self.settings.apiyi_api_key
 
+    def _require_closeai_api_key(self) -> str:
+        if not self.settings.closeai_api_key:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="CLOSEAI_API_KEY is not configured.",
+            )
+        return self.settings.closeai_api_key
+
     def _require_wuyin_api_key(self) -> str:
         if not self.settings.wuyin_api_key:
             raise HTTPException(
@@ -938,6 +950,59 @@ class AIService:
             )
         return result
 
+    async def _fuse_with_closeai_gpt_image2(
+        self,
+        *,
+        files: list[UploadFile],
+        metadata: FusionRequestMetadata,
+        model: TTAPIModelConfig,
+    ) -> GenerationResult:
+        prompt = self._build_fusion_prompt(metadata)
+        data = await self._post_closeai_gpt_image2_edit(
+            model=model,
+            prompt=prompt,
+            files=files,
+            size="auto",
+        )
+        stored_asset, raw_asset_metadata = await self._store_generated_result_from_openai_payload(
+            data=data,
+            kind="fusion",
+            model=model.id,
+            preferred_name=self._preferred_fusion_asset_name(metadata),
+        )
+        result = GenerationResult(
+            job_id=self._extract_job_id(data),
+            status="completed" if stored_asset["access_url"] else "failed",
+            provider=model.provider,
+            model=model.id,
+            image_url=stored_asset["access_url"],
+            message="Fusion generation completed." if stored_asset["access_url"] else "Fusion returned no asset.",
+            raw_response=data,
+        )
+        if result.image_url:
+            self._persist_history(
+                kind="fusion",
+                title=self._history_title_for_kind("fusion"),
+                model_id=model.id,
+                provider=model.provider.value,
+                status=result.status,
+                prompt=prompt,
+                job_id=result.job_id,
+                image_url=result.image_url,
+                storage_url=stored_asset["storage_url"],
+                metadata={
+                    "upstream_platform": "closeai",
+                    "upstream_model": model.upstream_model_id,
+                    "upstream_api": "images_edits",
+                    **self._build_fusion_history_metadata(metadata),
+                    "negative_prompt": metadata.negative_prompt,
+                    "strength": metadata.strength,
+                    **stored_asset["metadata"],
+                    **raw_asset_metadata,
+                },
+            )
+        return result
+
     async def _transform_with_wuyin_gpt_image2(
         self,
         *,
@@ -994,7 +1059,60 @@ class AIService:
                 **stored_asset["metadata"],
                 **self._build_reference_history_metadata(metadata),
             },
+            )
+        return result
+
+    async def _transform_with_closeai_gpt_image2(
+        self,
+        *,
+        files: list[UploadFile],
+        metadata: ReferenceImageRequestMetadata,
+        model: TTAPIModelConfig,
+    ) -> GenerationResult:
+        prompt = self._build_apiyi_reference_prompt(metadata)
+        data = await self._post_closeai_gpt_image2_edit(
+            model=model,
+            prompt=prompt,
+            files=files,
+            size=self._map_apiyi_vip_edit_size(metadata.image_size),
         )
+        stored_asset, raw_asset_metadata = await self._store_generated_result_from_openai_payload(
+            data=data,
+            kind=metadata.feature,
+            model=model.id,
+            preferred_name=metadata.filename,
+        )
+        result = GenerationResult(
+            job_id=self._extract_job_id(data),
+            status="completed" if stored_asset["access_url"] else "failed",
+            provider=model.provider,
+            model=model.id,
+            image_url=stored_asset["access_url"],
+            revised_prompt=prompt,
+            message="Reference image transform completed." if stored_asset["access_url"] else "Reference image transform returned no asset.",
+            raw_response=data,
+        ).model_copy(update=self._build_reference_result_update(metadata))
+        if result.image_url:
+            self._persist_history(
+                kind=self._map_feature_to_history_kind(metadata.feature),
+                title=self._feature_title(metadata.feature, model.label),
+                model_id=model.id,
+                provider=model.provider.value,
+                status=result.status,
+                prompt=prompt,
+                job_id=result.job_id,
+                image_url=result.image_url,
+                storage_url=stored_asset["storage_url"],
+                metadata={
+                    "upstream_platform": "closeai",
+                    "upstream_api": "images_edits",
+                    "upstream_model": model.upstream_model_id,
+                    "original_prompt": metadata.prompt,
+                    **stored_asset["metadata"],
+                    **raw_asset_metadata,
+                    **self._build_reference_history_metadata(metadata),
+                },
+            )
         return result
 
     async def _transform_with_apiyi_gpt_image2_all(
@@ -1060,7 +1178,7 @@ class AIService:
         api_key = self._require_apiyi_api_key()
         data = await self._post_json_with_bearer(
             base_url=self.settings.apiyi_gemini_base_url,
-            path=f"/models/{model.id}:generateContent",
+            path=f"/models/{model.upstream_model_id}:generateContent",
             api_key=api_key,
             payload={
                 "contents": [{"parts": [{"text": request.prompt}]}],
@@ -1368,7 +1486,7 @@ class AIService:
             )
         data = await self._post_json_with_bearer(
             base_url=self.settings.apiyi_gemini_base_url,
-            path=f"/models/{model.id}:generateContent",
+            path=f"/models/{model.upstream_model_id}:generateContent",
             api_key=api_key,
             payload={
                 "contents": [{"parts": parts}],
@@ -1501,7 +1619,7 @@ class AIService:
             )
         data = await self._post_json_with_bearer(
             base_url=self.settings.apiyi_gemini_base_url,
-            path=f"/models/{model.id}:generateContent",
+            path=f"/models/{model.upstream_model_id}:generateContent",
             api_key=api_key,
             payload={
                 "contents": [{"parts": parts}],
@@ -1864,6 +1982,34 @@ class AIService:
             timeout=self.settings.apiyi_timeout_seconds,
         )
 
+    async def _post_closeai_gpt_image2_edit(
+        self,
+        *,
+        model: TTAPIModelConfig,
+        prompt: str,
+        files: list[UploadFile],
+        size: str = "auto",
+    ) -> dict[str, Any]:
+        multipart_files = [await self._build_named_multipart_file(file, field_name="image") for file in files]
+        if not multipart_files:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one image is required for CloseAI image edit.",
+            )
+        return await self._post_multipart_with_bearer_base_url(
+            base_url=self.settings.closeai_base_url,
+            path="/images/edits",
+            api_key=self._require_closeai_api_key(),
+            data={
+                "model": model.upstream_model_id,
+                "prompt": prompt,
+                "size": size,
+                "response_format": "url",
+            },
+            files=multipart_files,
+            timeout=self.settings.closeai_timeout_seconds,
+        )
+
     async def _build_qwen_multi_view_prompt(
         self,
         *,
@@ -1919,11 +2065,12 @@ class AIService:
                 "任务：请反推当前珠宝图片的生成提示词，并集成给出一份新的生图提示词。"
                 "输出要求：只输出中文纯文本，不要 Markdown，不要换行符，不要额外解释。"
                 "最终提示词必须使用中文标点断句，至少使用逗号、句号或分号分隔主体描述、四视角要求和整体风格，不能输出没有标点的一整段长句。"
-                "新提示词必须要求生成该珠宝的四个角度视角：正视图、左侧视45度、右侧视45度、背视图。"
-                # "四视角必须明确写为：正视（需与原图一致）、左侧视（45度）、右侧视（45度）、背视。"
-                "正视图必须与原图完全一致，无需过多赘述；左侧视和右侧视必须基于参考图清楚表达45度侧面结构，；背视必须基于参考图合理描述，一般来说简单的镶嵌包裹描述即可。"
+                "新提示词必须要求生成该珠宝的四个角度视角：正视图、左侧视90度、右侧视90度、背视图。"
+                # "四视角必须明确写为：正视（需与原图一致）、左侧视（90度）、右侧视（90度）、背视。"
+                "正视图必须与原图完全一致，无需过多赘述；左侧视和右侧视必须基于参考图清楚表达90度侧面结构，；背视必须基于参考图合理描述，一般来说简单的镶嵌包裹描述即可。"
                 "请先观察当前图片，反推珠宝的设计提示词，再把这些信息写入最终提示词。"
                 "只能把模板中的省略内容替换为从当前图片反推出的具体信息，不得删减模板要求，不得缩写成摘要，不得改写成短句列表。"
+                "如果此珠宝为戒指，则左右侧视图需要45度视角，其他默认90度"
             ),
             suffix=(
                 "用户补充提示词：{user_prompt}。"
@@ -1942,8 +2089,8 @@ class AIService:
             "生成基于参考图的4个标准视角（4视图），每个视图在几何上必须忠实于参考模型。"
             "背景为纯白色，突出珠宝设计。图片需包含四个视角的展示："
             "1. 正视图：正面垂直视角，绝对与参照图一致保持一成不变。"
-            "2. 左侧视：从左侧45度角拍摄，展示金属镶嵌的简约风格，自然主义工艺、艺术雕塑感，无缝连续的有机曲线轮廓，简洁实心结构，无层间空隙或分层细节.....。"
-            "3. 右侧视：从右侧45度角拍摄，展示珠宝的另一侧.....。"
+            "2. 左侧视：从左侧90度角拍摄，展示金属镶嵌的简约风格，自然主义工艺、艺术雕塑感，无缝连续的有机曲线轮廓，简洁实心结构，无层间空隙或分层细节.....。"
+            "3. 右侧视：从右侧90度角拍摄，展示珠宝的另一侧.....。"
             "4. 背视：背面视角，展示珠宝的背面结构.....。"
             "整体风格：.......，线条清晰，镶嵌金属简约风格，统一金属包裹。"
             "无需生成文字解释。"

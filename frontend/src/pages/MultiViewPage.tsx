@@ -31,7 +31,12 @@ const progressPhases = [
   { at: 95, label: "拼合四宫格结果..." },
 ];
 const preferredMultiViewModelId = "gpt-image-2-all-apiyi";
-const allowedMultiViewModelIds = new Set(["gpt-image-2-all-apiyi", "multi-view-few-shot-apiyi"]);
+const allowedMultiViewModelIds = new Set([
+  "gpt-image-2-all-apiyi",
+  "multi-view-few-shot-apiyi",
+  "gemini-3-pro-image-preview-apiyi",
+  "gpt-image-2-closeai",
+]);
 const generationCountOptions = [1, 2, 4] as const;
 type GenerationCount = (typeof generationCountOptions)[number];
 const jobProgressLabels = {

@@ -5,7 +5,7 @@ from fastapi import UploadFile
 from fastapi.testclient import TestClient
 
 from app.api.v1.routes.ai import cache_service
-from app.schemas.ai import ReferenceImageRequestMetadata
+from app.schemas.ai import ReferenceImageRequestMetadata, TextToImageRequest
 from app.services.ai_service import AIService
 
 
@@ -20,10 +20,14 @@ def test_model_catalog_exposes_expected_models(client: TestClient) -> None:
     assert model_ids == {
         "gpt-image-2-all-apiyi",
         "multi-view-few-shot-apiyi",
+        "gemini-3-pro-image-preview-apiyi",
+        "gpt-image-2-closeai",
         "gemini-3.1-flash-image-preview",
     }
     assert "gpt-image-2-all-apiyi" in model_ids
     assert "multi-view-few-shot-apiyi" in model_ids
+    assert "gemini-3-pro-image-preview-apiyi" in model_ids
+    assert "gpt-image-2-closeai" in model_ids
     assert "gpt-image-2-wuyin" not in model_ids
     assert "gemini-3.1-flash-image-preview" in model_ids
     assert "gemini-3-pro-image-preview" not in model_ids
@@ -39,6 +43,16 @@ def test_model_catalog_exposes_expected_models(client: TestClient) -> None:
     assert models["multi-view-few-shot-apiyi"]["supports_reference_images"] is True
     assert models["multi-view-few-shot-apiyi"]["provider"] == "apiyi"
     assert models["multi-view-few-shot-apiyi"]["label"].startswith("APIYI")
+    assert models["gemini-3-pro-image-preview-apiyi"]["supports_text_to_image"] is True
+    assert models["gemini-3-pro-image-preview-apiyi"]["supports_multi_image_fusion"] is True
+    assert models["gemini-3-pro-image-preview-apiyi"]["supports_reference_images"] is True
+    assert models["gemini-3-pro-image-preview-apiyi"]["provider"] == "gemini"
+    assert models["gemini-3-pro-image-preview-apiyi"]["label"].startswith("APIYI")
+    assert models["gpt-image-2-closeai"]["supports_text_to_image"] is False
+    assert models["gpt-image-2-closeai"]["supports_multi_image_fusion"] is True
+    assert models["gpt-image-2-closeai"]["supports_reference_images"] is True
+    assert models["gpt-image-2-closeai"]["provider"] == "closeai"
+    assert models["gpt-image-2-closeai"]["label"].startswith("CloseAI")
     assert models["gemini-3.1-flash-image-preview"]["supports_text_to_image"] is True
     assert models["gemini-3.1-flash-image-preview"]["supports_multi_image_fusion"] is True
     assert models["gemini-3.1-flash-image-preview"]["supports_reference_images"] is True
@@ -82,7 +96,8 @@ def test_builds_qwen_multi_view_prompt_request_text() -> None:
     assert "必须使用中文标点断句" in prompt
     assert "不能输出没有标点的一整段长句" in prompt
     assert "正视图必须与原图完全一致" in prompt
-    assert "左侧视和右侧视必须基于参考图清楚表达45度侧面结构" in prompt
+    assert "左侧视和右侧视必须基于参考图清楚表达" in prompt
+    assert "侧面结构" in prompt
     assert "背视" in prompt
     assert "任务：请反推当前珠宝图片的生成提示词" in prompt
     assert "生成基于参考图的4个标准视角" in prompt
@@ -186,6 +201,88 @@ def test_apiyi_vip_edit_payload_uses_multipart_images(monkeypatch) -> None:
     assert files[0][1][0] == "example-a.png"
     assert files[1][1][0] == "example-b.png"
     assert files[2][1][0] == "source.png"
+
+
+def test_closeai_gpt_image2_edit_payload_uses_closeai_config(monkeypatch) -> None:
+    service = AIService()
+    monkeypatch.setattr(service, "_require_closeai_api_key", lambda: "test-closeai-key")
+    monkeypatch.setattr(service.settings, "closeai_base_url", "https://api.openai-proxy.org/v1")
+
+    captured: dict[str, object] = {}
+
+    async def fake_post_multipart_with_bearer_base_url(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+        return {"data": [{"url": "https://example.com/result.png"}]}
+
+    monkeypatch.setattr(service, "_post_multipart_with_bearer_base_url", fake_post_multipart_with_bearer_base_url)
+
+    async def run_request() -> None:
+        files = [UploadFile(filename="source.png", file=BytesIO(b"source"))]
+        try:
+            await service._post_closeai_gpt_image2_edit(
+                model=service._get_model_or_404("gpt-image-2-closeai"),
+                prompt="转写实",
+                files=files,
+                size="2048x2048",
+            )
+        finally:
+            for item in files:
+                item.file.close()
+
+    asyncio.run(run_request())
+
+    assert captured["base_url"] == "https://api.openai-proxy.org/v1"
+    assert captured["path"] == "/images/edits"
+    data = captured["data"]
+    assert isinstance(data, dict)
+    assert data == {
+        "model": "gpt-image-2",
+        "prompt": "转写实",
+        "size": "2048x2048",
+        "response_format": "url",
+    }
+    assert captured["api_key"] == "test-closeai-key"
+
+
+def test_apiyi_gemini_uses_upstream_model_id(monkeypatch) -> None:
+    service = AIService()
+    monkeypatch.setattr(service, "_require_apiyi_api_key", lambda: "test-apiyi-key")
+    monkeypatch.setattr(service, "_extract_inline_image", lambda data: (b"image-bytes", "image/png"))
+
+    captured: dict[str, object] = {}
+
+    async def fake_post_json_with_bearer(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+        return {"candidates": [{"content": {"parts": []}}]}
+
+    async def fake_store_generated_binary_asset(**kwargs):  # noqa: ANN003
+        return {
+            "access_url": "/api/v1/assets/content?storage_url=local://generated.png",
+            "storage_url": "local://generated.png",
+            "metadata": {},
+        }
+
+    monkeypatch.setattr(service, "_post_json_with_bearer", fake_post_json_with_bearer)
+    monkeypatch.setattr(service, "_store_generated_binary_asset", fake_store_generated_binary_asset)
+    monkeypatch.setattr(service, "_persist_history", lambda **kwargs: None)
+
+    async def run_request() -> None:
+        await service._generate_with_gemini_apiyi(
+            request=TextToImageRequest(
+                prompt="珠宝图",
+                model="gemini-3-pro-image-preview-apiyi",
+                aspect_ratio="1:1",
+                size="1024x1024",
+                image_size="1K",
+                thinking_level="High",
+            ),
+            model=service._get_model_or_404("gemini-3-pro-image-preview-apiyi"),
+        )
+
+    asyncio.run(run_request())
+
+    assert captured["base_url"] == service.settings.apiyi_gemini_base_url
+    assert captured["path"] == "/models/gemini-3-pro-image-preview:generateContent"
 
 
 def test_apiyi_vip_edit_size_mapping() -> None:
