@@ -3700,6 +3700,47 @@ select {
   gap: 12px;
 }
 
+.generation-time-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  padding-top: 2px;
+}
+
+.generation-time-info.compact {
+  gap: 8px 12px;
+}
+
+.generation-time-pill,
+.generation-time-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  color: #dbe2ef;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.generation-time-pill strong,
+.generation-time-meta strong {
+  color: #f2ca48;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.generation-time-info.compact .generation-time-pill,
+.generation-time-info.compact .generation-time-meta {
+  min-height: 24px;
+  padding: 5px 9px;
+  font-size: 11px;
+}
+
 .agent-generation-head {
   display: flex;
   align-items: flex-start;

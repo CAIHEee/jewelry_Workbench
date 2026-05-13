@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AutoResizeTextarea } from "./AutoResizeTextarea";
 import { AssetSourcePicker } from "./AssetSourcePicker";
 import { FloatingToast } from "./FloatingToast";
+import { GenerationTimeInfo } from "./GenerationTimeInfo";
 import { GenerationProgress } from "./GenerationProgress";
 import { LocalImageMarkupEditor } from "./LocalImageMarkupEditor";
 import { PageGenerationHistory } from "./PageGenerationHistory";
@@ -104,6 +105,7 @@ export function ReferenceTransformModulePage({
   const [error, setError] = useState<string | null>(null);
   const [progressState, setProgressState] = useState<"idle" | "running" | "success" | "error">("idle");
   const [jobProgress, setJobProgress] = useState<GenerationJobProgress | null>(null);
+  const [currentGenerationTiming, setCurrentGenerationTiming] = useState<{ startedAt: string; completedAt: string | null; elapsedMs: number | null } | null>(null);
   const [markupFile, setMarkupFile] = useState<File | null>(null);
   const [markupPreviewUrl, setMarkupPreviewUrl] = useState<string | null>(null);
 
@@ -122,6 +124,9 @@ export function ReferenceTransformModulePage({
   const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
   const activeHistory = selectedHistory ?? (!result ? pageRuns[0] ?? null : null);
   const previewResultUrl = activeHistory?.imageUrl ?? result?.image_url ?? null;
+  const previewTiming = activeHistory
+    ? { startedAt: activeHistory.startedAt, completedAt: activeHistory.completedAt, elapsedMs: activeHistory.elapsedMs }
+    : currentGenerationTiming;
   const previewSourceUrl = useMemo(() => {
     const historySourceUrl = activeHistory?.sourceImageUrl ?? null;
     if (historySourceUrl && historySourceUrl !== previewResultUrl) {
@@ -166,6 +171,8 @@ export function ReferenceTransformModulePage({
 
     setLoading(true);
     setError(null);
+    const startedAt = new Date().toISOString();
+    setCurrentGenerationTiming({ startedAt, completedAt: null, elapsedMs: null });
     setProgressState("running");
     setJobProgress({ percent: 18, label: `${pageTitle}任务排队中...` });
     try {
@@ -214,6 +221,9 @@ export function ReferenceTransformModulePage({
 
       setResult(response);
       setSelectedHistoryId(null);
+      const completedAt = new Date().toISOString();
+      const elapsedMs = Date.parse(completedAt) - Date.parse(startedAt);
+      setCurrentGenerationTiming({ startedAt, completedAt, elapsedMs });
       onRecordRun({
         kind: historyKind,
         title: pageTitle,
@@ -230,6 +240,9 @@ export function ReferenceTransformModulePage({
             : sourceUrlsForSubmit.length
               ? sourceUrlsForSubmit
               : selectedAssetUrls,
+        startedAt,
+        completedAt,
+        elapsedMs,
         prompt: prompt.trim(),
       });
       setJobProgress({ percent: 100, label: "已完成" });
@@ -237,6 +250,9 @@ export function ReferenceTransformModulePage({
     } catch (submitError) {
       setLoading(false);
       setProgressState("error");
+      setCurrentGenerationTiming((current) =>
+        current ? { ...current, completedAt: new Date().toISOString(), elapsedMs: Date.now() - Date.parse(current.startedAt) } : current,
+      );
       setJobProgress({
         percent: 100,
         label: submitError instanceof Error ? submitError.message : submitErrorLabel,
@@ -353,6 +369,11 @@ export function ReferenceTransformModulePage({
                     >
                       {previewResultUrl ? <img className="generated-image image-fit-contain interactive-preview-image" src={previewResultUrl} alt={resultLabel} /> : <div className="compare-card after" />}
                     </div>
+                    <GenerationTimeInfo
+                      startedAt={previewTiming?.startedAt ?? null}
+                      completedAt={previewTiming?.completedAt ?? null}
+                      elapsedMs={previewTiming?.elapsedMs ?? null}
+                    />
                   </div>
                 </div>
               </details>

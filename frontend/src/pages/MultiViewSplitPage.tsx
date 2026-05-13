@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import { AssetSourcePicker } from "../components/AssetSourcePicker";
 import { FloatingToast } from "../components/FloatingToast";
+import { GenerationTimeInfo } from "../components/GenerationTimeInfo";
 import { GenerationProgress } from "../components/GenerationProgress";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
 import { ResultPreviewModal } from "../components/ResultPreviewModal";
@@ -68,6 +69,7 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
   const [activeTab, setActiveTab] = useState<SplitPreviewTab>("source");
   const [progressState, setProgressState] = useState<"idle" | "running" | "success" | "error">("idle");
   const [jobProgress, setJobProgress] = useState<GenerationJobProgress | null>(null);
+  const [currentGenerationTiming, setCurrentGenerationTiming] = useState<{ startedAt: string; completedAt: string | null; elapsedMs: number | null } | null>(null);
 
   const uploadedPreviewUrl = useMemo(() => (files[0] ? URL.createObjectURL(files[0]) : null), [files]);
 
@@ -95,6 +97,9 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
 
   const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
   const activeHistory = selectedHistory ?? (!splitResult ? pageRuns[0] ?? null : null);
+  const previewTiming = activeHistory
+    ? { startedAt: activeHistory.startedAt, completedAt: activeHistory.completedAt, elapsedMs: activeHistory.elapsedMs }
+    : currentGenerationTiming;
   const hasCurrentSourceSelection = Boolean(uploadedPreviewUrl || selectedAssets[0]);
   const sourcePreviewUrl =
     uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? activeHistory?.sourceImageUrl ?? null;
@@ -140,6 +145,8 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
     }
     setLoading(true);
     setError(null);
+    const startedAt = new Date().toISOString();
+    setCurrentGenerationTiming({ startedAt, completedAt: null, elapsedMs: null });
     setProgressState("running");
     setJobProgress({ percent: 18, label: "多视图切图任务排队中..." });
 
@@ -168,6 +175,9 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
       setSplitResult(response);
       setSelectedHistoryId(null);
       setActiveTab("result");
+      const completedAt = new Date().toISOString();
+      const elapsedMs = Date.parse(completedAt) - Date.parse(startedAt);
+      setCurrentGenerationTiming({ startedAt, completedAt, elapsedMs });
       setJobProgress({ percent: 100, label: "已完成" });
       setProgressState("success");
       onRecordRun?.({
@@ -180,6 +190,9 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
         sourceImageUrl,
         sourceImages: response.items.map((item) => item.image_url).filter((item): item is string => Boolean(item)),
         primaryImageIndex: 0,
+        startedAt,
+        completedAt,
+        elapsedMs,
         splitItems: response.items.map((item) => ({
           view: item.view,
           imageUrl: item.image_url,
@@ -192,6 +205,9 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
     } catch (splitError) {
       setLoading(false);
       setProgressState("error");
+      setCurrentGenerationTiming((current) =>
+        current ? { ...current, completedAt: new Date().toISOString(), elapsedMs: Date.now() - Date.parse(current.startedAt) } : current,
+      );
       setJobProgress({
         percent: 100,
         label: splitError instanceof Error ? splitError.message : "多视图切图失败。",
@@ -326,38 +342,45 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
                     </div>
 
                     {activeSplitItems.length ? (
-                      <div className="split-result-thumbnail-row">
-                        {activeSplitItems.map((item) => (
-                          <div key={item.view} className="split-result-thumbnail active">
-                            <button
-                              type="button"
-                              className="split-result-thumbnail-selector"
-                              onClick={() => item.image_url && setSplitPreviewUrl(item.image_url)}
-                              title={splitViewLabels[item.view] ?? item.view}
-                            >
-                              <span className="split-result-thumbnail-label">
-                                {splitViewLabels[item.view] ?? item.view}
-                                <span className="split-result-dimension-pill">
-                                  {item.width} x {item.height}
+                      <>
+                        <div className="split-result-thumbnail-row">
+                          {activeSplitItems.map((item) => (
+                            <div key={item.view} className="split-result-thumbnail active">
+                              <button
+                                type="button"
+                                className="split-result-thumbnail-selector"
+                                onClick={() => item.image_url && setSplitPreviewUrl(item.image_url)}
+                                title={splitViewLabels[item.view] ?? item.view}
+                              >
+                                <span className="split-result-thumbnail-label">
+                                  {splitViewLabels[item.view] ?? item.view}
+                                  <span className="split-result-dimension-pill">
+                                    {item.width} x {item.height}
+                                  </span>
                                 </span>
-                              </span>
-                              <div className="split-result-thumbnail-frame">
-                                {item.image_url ? (
-                                  <img className="generated-image image-fit-contain" src={item.image_url} alt={splitViewLabels[item.view] ?? item.view} />
-                                ) : (
-                                  <div className="compare-card after" />
-                                )}
-                              </div>
-                            </button>
+                                <div className="split-result-thumbnail-frame">
+                                  {item.image_url ? (
+                                    <img className="generated-image image-fit-contain" src={item.image_url} alt={splitViewLabels[item.view] ?? item.view} />
+                                  ) : (
+                                    <div className="compare-card after" />
+                                  )}
+                                </div>
+                              </button>
 
-                            {item.image_url ? (
-                              <a className="split-result-thumbnail-download" href={buildDownloadUrl(item.image_url, buildSplitDownloadName(item)) ?? item.image_url} download={buildSplitDownloadName(item)}>
-                                下载图片
-                              </a>
-                            ) : null}
-                          </div>
-                        ))}
-                      </div>
+                              {item.image_url ? (
+                                <a className="split-result-thumbnail-download" href={buildDownloadUrl(item.image_url, buildSplitDownloadName(item)) ?? item.image_url} download={buildSplitDownloadName(item)}>
+                                  下载图片
+                                </a>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                        <GenerationTimeInfo
+                          startedAt={previewTiming?.startedAt ?? null}
+                          completedAt={previewTiming?.completedAt ?? null}
+                          elapsedMs={previewTiming?.elapsedMs ?? null}
+                        />
+                      </>
                     ) : (
                       <div className="panel-subcard compact split-empty-state">
                         <p className="muted">完成切图后，这里会展示各视图结果。</p>

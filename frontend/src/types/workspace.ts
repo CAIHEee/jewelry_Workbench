@@ -26,5 +26,8 @@ export interface WorkspaceRun {
     height: number;
   }> | null;
   createdAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  elapsedMs?: number | null;
   prompt: string;
 }

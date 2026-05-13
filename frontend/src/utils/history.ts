@@ -34,6 +34,9 @@ export interface ModuleHistoryEntry {
     height: number;
   }>;
   createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  elapsedMs: number | null;
   source: "persisted" | "session";
   ownerUsername?: string | null;
 }
@@ -164,6 +167,22 @@ export function formatHistoryTimestamp(value: string): string {
   }).format(new Date(timestamp));
 }
 
+export function formatGenerationElapsed(value: number | null | undefined): string | null {
+  if (!Number.isFinite(value) || (value ?? 0) < 0) {
+    return null;
+  }
+
+  const totalSeconds = Math.max(0, Math.round((value ?? 0) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes === 0) {
+    return `${seconds} 秒`;
+  }
+
+  return `${minutes} 分 ${seconds.toString().padStart(2, "0")} 秒`;
+}
+
 export function toModuleHistoryEntry(item: PersistedHistoryItem | WorkspaceRun): ModuleHistoryEntry | null {
   if ("imageUrl" in item) {
     const normalizedKind = normalizeHistoryKind(resolveHistoryKind(item.kind, item.title, item.prompt, null));
@@ -188,6 +207,9 @@ export function toModuleHistoryEntry(item: PersistedHistoryItem | WorkspaceRun):
         imageUrl: isBrowserObjectUrl(entry.imageUrl) ? null : entry.imageUrl,
       })),
       createdAt: item.createdAt,
+      startedAt: item.startedAt ?? null,
+      completedAt: item.completedAt ?? null,
+      elapsedMs: item.elapsedMs ?? null,
       source: "session",
       ownerUsername: null,
     };
@@ -213,6 +235,9 @@ export function toModuleHistoryEntry(item: PersistedHistoryItem | WorkspaceRun):
     primaryImageIndex: extractPrimaryImageIndex(item.metadata ?? null),
     splitItems: extractSplitItems(item.metadata ?? null),
     createdAt: item.created_at,
+    startedAt: extractHistoryStartedAt(item),
+    completedAt: extractHistoryCompletedAt(item),
+    elapsedMs: extractHistoryElapsedMs(item),
     source: "persisted",
     ownerUsername: item.owner_username,
   };
@@ -336,7 +361,7 @@ export function mergeModuleHistory(
   });
 }
 
-function parseHistoryTimestamp(value: string): number {
+export function parseHistoryTimestamp(value: string): number {
   const direct = Date.parse(value);
   if (Number.isFinite(direct)) {
     return direct;
@@ -363,6 +388,43 @@ export function dedupePersistedHistoryItems(items: PersistedHistoryItem[]): Pers
     seen.add(dedupeKey);
     return true;
   });
+}
+
+function extractHistoryStartedAt(item: PersistedHistoryItem): string | null {
+  if (typeof item.started_at === "string" && item.started_at.trim()) {
+    return item.started_at;
+  }
+  const metadataValue = item.metadata?.started_at;
+  return typeof metadataValue === "string" && metadataValue.trim() ? metadataValue : null;
+}
+
+function extractHistoryCompletedAt(item: PersistedHistoryItem): string | null {
+  if (typeof item.completed_at === "string" && item.completed_at.trim()) {
+    return item.completed_at;
+  }
+  const metadataValue = item.metadata?.completed_at;
+  return typeof metadataValue === "string" && metadataValue.trim() ? metadataValue : null;
+}
+
+function extractHistoryElapsedMs(item: PersistedHistoryItem): number | null {
+  const metadataElapsed = item.metadata?.elapsed_ms;
+  if (typeof metadataElapsed === "number" && Number.isFinite(metadataElapsed) && metadataElapsed >= 0) {
+    return metadataElapsed;
+  }
+
+  const startedAt = extractHistoryStartedAt(item);
+  const completedAt = extractHistoryCompletedAt(item);
+  if (!startedAt || !completedAt) {
+    return null;
+  }
+
+  const startedTimestamp = parseHistoryTimestamp(startedAt);
+  const completedTimestamp = parseHistoryTimestamp(completedAt);
+  if (!Number.isFinite(startedTimestamp) || !Number.isFinite(completedTimestamp) || completedTimestamp < startedTimestamp) {
+    return null;
+  }
+
+  return completedTimestamp - startedTimestamp;
 }
 
 export function resolveHistoryKind(

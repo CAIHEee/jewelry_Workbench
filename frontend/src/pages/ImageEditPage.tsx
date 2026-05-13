@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { AssetSourcePicker } from "../components/AssetSourcePicker";
 import { FloatingToast } from "../components/FloatingToast";
+import { GenerationTimeInfo } from "../components/GenerationTimeInfo";
 import { GenerationProgress } from "../components/GenerationProgress";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
 import { ResultPreviewModal } from "../components/ResultPreviewModal";
@@ -60,6 +61,7 @@ export function ImageEditPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
   const [error, setError] = useState<string | null>(null);
   const [progressState, setProgressState] = useState<"idle" | "running" | "success" | "error">("idle");
   const [jobProgress, setJobProgress] = useState<GenerationJobProgress | null>(null);
+  const [currentGenerationTiming, setCurrentGenerationTiming] = useState<{ startedAt: string; completedAt: string | null; elapsedMs: number | null } | null>(null);
 
   useEffect(() => {
     if (!models.length) return;
@@ -79,6 +81,9 @@ export function ImageEditPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
   const activeHistory = selectedHistory ?? (results.length === 0 ? pageRuns[0] ?? null : null);
   const latestResult = results[0] ?? null;
   const previewResultUrl = activeHistory?.imageUrl ?? latestResult?.image_url ?? null;
+  const previewTiming = activeHistory
+    ? { startedAt: activeHistory.startedAt, completedAt: activeHistory.completedAt, elapsedMs: activeHistory.elapsedMs }
+    : currentGenerationTiming;
   const previewSourceUrl = useMemo(() => {
     const historySourceUrl = activeHistory?.sourceImageUrl ?? null;
     if (historySourceUrl && historySourceUrl !== previewResultUrl) {
@@ -113,6 +118,8 @@ export function ImageEditPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
     setError(null);
     setResults([]);
     setSelectedHistoryId(null);
+    const startedAt = new Date().toISOString();
+    setCurrentGenerationTiming({ startedAt, completedAt: null, elapsedMs: null });
     setProgressState("running");
     setJobProgress({ percent: 18, label: "写实转绘任务排队中..." });
     try {
@@ -151,6 +158,9 @@ export function ImageEditPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
         throw new Error("生成完成，但没有返回结果图片，请稍后重试。");
       }
       validResponses.forEach((item) => recordCompletedResponse(item));
+      const completedAt = new Date().toISOString();
+      const elapsedMs = Date.parse(completedAt) - Date.parse(startedAt);
+      setCurrentGenerationTiming({ startedAt, completedAt, elapsedMs });
       setJobProgress({ percent: 100, label: generationCount > 1 ? `已完成 ${validResponses.length}/${generationCount} 张` : "已完成" });
       setProgressState("success");
       await onRefreshHistory?.();
@@ -163,6 +173,9 @@ export function ImageEditPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
     } catch (submitError) {
       setLoading(false);
       setProgressState("error");
+      setCurrentGenerationTiming((current) =>
+        current ? { ...current, completedAt: new Date().toISOString(), elapsedMs: Date.now() - Date.parse(current.startedAt) } : current,
+      );
       setJobProgress({
         percent: 100,
         label: submitError instanceof Error ? submitError.message : "线稿转写实图失败",
@@ -254,6 +267,11 @@ export function ImageEditPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
                     >
                       {previewResultUrl ? <img className="generated-image image-fit-contain interactive-preview-image" src={previewResultUrl} alt="写实结果" /> : <div className="compare-card after" />}
                     </div>
+                    <GenerationTimeInfo
+                      startedAt={previewTiming?.startedAt ?? null}
+                      completedAt={previewTiming?.completedAt ?? null}
+                      elapsedMs={previewTiming?.elapsedMs ?? null}
+                    />
                   </div>
                 </div>
               </details>
