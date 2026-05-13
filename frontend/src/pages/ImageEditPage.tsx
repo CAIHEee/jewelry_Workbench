@@ -32,7 +32,7 @@ const jobProgressLabels = {
   succeeded: "已完成",
   failed: "线稿转写实图失败",
 };
-const preferredImageEditModelId = "gemini-3.1-flash-image-preview";
+const preferredImageEditModelId = "gpt-image-2-all-apiyi";
 const generationCountOptions = [1, 2, 4] as const;
 type GenerationCount = (typeof generationCountOptions)[number];
 

@@ -1449,7 +1449,7 @@ def test_workflow_uses_recent_image_and_routes_sketch_to_realistic(auth_client: 
     detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
     action = detail["actions"][0]
     assert action["module_key"] == "sketch_to_realistic"
-    assert action["params"]["model"] == "gemini-3.1-flash-image-preview"
+    assert action["params"]["model"] == "gpt-image-2-all-apiyi"
 
 
 def test_workflow_prompt_with_image_uses_llm_planning(auth_client: TestClient, monkeypatch) -> None:

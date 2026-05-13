@@ -8,7 +8,7 @@ DEFAULT_IMAGE_REGENERATE_MODEL = "gpt-image-2-all-apiyi"
 DEFAULT_MULTI_VIEW_MODEL = "gpt-image-2-all-apiyi"
 DEFAULT_GRAYSCALE_RELIEF_MODEL = "gpt-image-2-all-apiyi"
 DEFAULT_GEMSTONE_DESIGN_MODEL = "gemini-3.1-flash-image-preview"
-DEFAULT_SKETCH_TO_REALISTIC_MODEL = "gemini-3.1-flash-image-preview"
+DEFAULT_SKETCH_TO_REALISTIC_MODEL = "gpt-image-2-all-apiyi"
 DEFAULT_TEXT_TO_IMAGE_PROMPT_SUFFIX = "高级珠宝产品渲染效果，背景干净，金属光泽真实，工艺细节清晰。"
 DESIGN_FRONT_VIEW_CONSTRAINT = (
     "必须生成完整的珠宝设计正视图，主体珠宝完整入画、居中展示，不裁切、不只展示局部特写，"

@@ -79,12 +79,10 @@ def test_builds_qwen_multi_view_prompt_request_text() -> None:
     assert "请反推当前珠宝图片的生成提示词" in prompt
     assert "只输出中文纯文本" in prompt
     assert "不要 Markdown，不要换行符" in prompt
-    assert "参考 gpt image 2 的提示词编写规范" in prompt
     assert "必须使用中文标点断句" in prompt
     assert "不能输出没有标点的一整段长句" in prompt
-    assert "正视（需与原图一致）" in prompt
-    assert "左侧视（45度）" in prompt
-    assert "右侧视（45度）" in prompt
+    assert "正视图必须与原图完全一致" in prompt
+    assert "左侧视和右侧视必须基于参考图清楚表达45度侧面结构" in prompt
     assert "背视" in prompt
     assert "任务：请反推当前珠宝图片的生成提示词" in prompt
     assert "生成基于参考图的4个标准视角" in prompt
@@ -94,7 +92,7 @@ def test_builds_qwen_multi_view_prompt_request_text() -> None:
     assert "胸针" not in prompt
     assert "祖母绿绿色" not in prompt
     assert prompt.index("任务：请反推当前珠宝图片的生成提示词") < prompt.index("用户补充提示词：保留翡翠绿色")
-    assert prompt.endswith("现在请基于当前图片和用户补充提示词，直接输出最终生图提示词。")
+    assert prompt.endswith("如果用户提示词存在，则它的权重最高。")
     assert "用户补充提示词：保留翡翠绿色" in prompt
 
 
