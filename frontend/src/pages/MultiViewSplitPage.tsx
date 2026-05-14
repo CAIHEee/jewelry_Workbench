@@ -56,6 +56,7 @@ function buildSplitDownloadName(item: MultiViewSplitItem | null) {
 export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDeleteHistory }: MultiViewSplitPageProps) {
   const [files, setFiles] = useState<File[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<AssetItem[]>([]);
+  const [localSourcePreviewUrl, setLocalSourcePreviewUrl] = useState<string | null>(null);
   const [splitPreviewUrl, setSplitPreviewUrl] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [splitResult, setSplitResult] = useState<MultiViewSplitResponse | null>(null);
@@ -71,15 +72,13 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
   const [jobProgress, setJobProgress] = useState<GenerationJobProgress | null>(null);
   const [currentGenerationStartedAt, setCurrentGenerationStartedAt] = useState<string | null>(null);
 
-  const uploadedPreviewUrl = useMemo(() => (files[0] ? URL.createObjectURL(files[0]) : null), [files]);
-
   useEffect(() => {
     return () => {
-      if (uploadedPreviewUrl) {
-        URL.revokeObjectURL(uploadedPreviewUrl);
+      if (localSourcePreviewUrl) {
+        URL.revokeObjectURL(localSourcePreviewUrl);
       }
     };
-  }, [uploadedPreviewUrl]);
+  }, [localSourcePreviewUrl]);
 
   const splitOverlayStyle = {
     ["--split-x" as const]: `${(splitXRatio * 100).toFixed(2)}%`,
@@ -97,21 +96,32 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
 
   const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
   const activeHistory = selectedHistory ?? (!splitResult ? pageRuns[0] ?? null : null);
-  const hasCurrentSourceSelection = Boolean(uploadedPreviewUrl || selectedAssets[0]);
+  const hasCurrentSourceSelection = Boolean(localSourcePreviewUrl || selectedAssets[0]);
   const sourcePreviewUrl =
-    uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? activeHistory?.sourceImageUrl ?? null;
+    localSourcePreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? activeHistory?.sourceImageUrl ?? null;
   const activeSplitItems = useMemo<MultiViewSplitItem[]>(
-    () =>
-      !hasCurrentSourceSelection && activeHistory?.splitItems.length
-        ? activeHistory.splitItems.map((item) => ({
+    () => {
+      if (selectedHistory?.splitItems.length) {
+        return selectedHistory.splitItems.map((item) => ({
             view: item.view,
             image_url: item.imageUrl,
             storage_url: item.storageUrl ?? null,
             width: item.width,
             height: item.height,
-          }))
-        : splitResult?.items ?? [],
-    [activeHistory, hasCurrentSourceSelection, splitResult],
+        }));
+      }
+      if (!hasCurrentSourceSelection && activeHistory?.splitItems.length) {
+        return activeHistory.splitItems.map((item) => ({
+          view: item.view,
+          image_url: item.imageUrl,
+          storage_url: item.storageUrl ?? null,
+          width: item.width,
+          height: item.height,
+        }));
+      }
+      return splitResult?.items ?? [];
+    },
+    [activeHistory, hasCurrentSourceSelection, selectedHistory, splitResult],
   );
 
   useEffect(() => {
@@ -121,7 +131,35 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
 
     setSelectedHistoryId(null);
     setActiveTab("source");
-  }, [hasCurrentSourceSelection, uploadedPreviewUrl, selectedAssets]);
+  }, [hasCurrentSourceSelection, localSourcePreviewUrl, selectedAssets]);
+
+  function handleUploadFilesChange(nextFiles: File[]) {
+    setFiles(nextFiles);
+    setSelectedAssets([]);
+    setSplitResult(null);
+    setSplitPreviewUrl(null);
+    setLocalSourcePreviewUrl((current) => {
+      if (current) {
+        URL.revokeObjectURL(current);
+      }
+      return nextFiles[0] ? URL.createObjectURL(nextFiles[0]) : null;
+    });
+  }
+
+  function handleSelectedAssetsChange(nextAssets: AssetItem[]) {
+    setSelectedAssets(nextAssets);
+    if (nextAssets.length > 0) {
+      setFiles([]);
+      setSplitResult(null);
+      setSplitPreviewUrl(null);
+      setLocalSourcePreviewUrl((current) => {
+        if (current) {
+          URL.revokeObjectURL(current);
+        }
+        return null;
+      });
+    }
+  }
 
   async function resolveSourceImageUrl() {
     if (selectedAssets[0]) {
@@ -222,9 +260,9 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
             <AssetSourcePicker
               title="选择切图来源"
               assetItems={assetItems}
-              uploadLabel="上传待切图图片"
-              onUploadFilesChange={setFiles}
-              onSelectedAssetsChange={setSelectedAssets}
+              uploadLabel="上传图片"
+              onUploadFilesChange={handleUploadFilesChange}
+              onSelectedAssetsChange={handleSelectedAssetsChange}
             />
 
             <details className="drawer-panel inner-drawer">
@@ -381,6 +419,16 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
               items={pageRuns}
               activeId={selectedHistoryId}
               onPreview={(item) => {
+                setFiles([]);
+                setSelectedAssets([]);
+                setSplitResult(null);
+                setSplitPreviewUrl(null);
+                setLocalSourcePreviewUrl((current) => {
+                  if (current) {
+                    URL.revokeObjectURL(current);
+                  }
+                  return null;
+                });
                 setSelectedHistoryId(item.id);
                 setActiveTab("result");
               }}

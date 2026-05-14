@@ -237,7 +237,7 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
               />
             </label>
 
-            <div className="input-group compact-input-group">
+            <div className="input-group compact-input-group count-input-row">
               <span>生成数量</span>
               <div className="count-segmented" role="radiogroup" aria-label="生成数量">
                 {generationCountOptions.map((count) => (

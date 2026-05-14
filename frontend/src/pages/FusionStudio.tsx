@@ -220,7 +220,7 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
               title="选择参考图"
               assetItems={assetItems}
               allowMultiple
-              uploadLabel="上传融合参考图"
+              uploadLabel="上传参考图"
               onUploadFilesChange={(nextFiles) => {
                 setFiles(nextFiles);
                 if (primaryImageIndex >= nextFiles.length) {

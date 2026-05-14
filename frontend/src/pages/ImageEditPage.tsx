@@ -200,13 +200,13 @@ export function ImageEditPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
             <AssetSourcePicker
               title="选择线稿来源"
               assetItems={assetItems}
-              uploadLabel="上传线稿或草图"
+              uploadLabel="上传草图"
               enableRecommendedAsset={false}
               onUploadFilesChange={setFiles}
               onSelectedAssetsChange={setSelectedAssets}
             />
 
-            <div className="input-group compact-input-group">
+            <div className="input-group compact-input-group count-input-row">
               <span>生成数量</span>
               <div className="count-segmented" role="radiogroup" aria-label="生成数量">
                 {generationCountOptions.map((count) => (

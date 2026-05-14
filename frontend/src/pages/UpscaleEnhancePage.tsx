@@ -26,7 +26,7 @@ export function UpscaleEnhancePage(props: UpscaleEnhancePageProps) {
       previewTitle="高清放大预览"
       resultLabel="放大结果"
       sourcePickerTitle="选择高清放大来源"
-      uploadLabel="上传待放大图片"
+      uploadLabel="上传图片"
       promptLabel="增强提示词"
       submitLabel="生成高清图"
       loadingLabel="放大中..."
