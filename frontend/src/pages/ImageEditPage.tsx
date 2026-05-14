@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AssetSourcePicker } from "../components/AssetSourcePicker";
 import { FloatingToast } from "../components/FloatingToast";
 import { GenerationProgress } from "../components/GenerationProgress";
+import { GeneratingImagePlaceholder } from "../components/GeneratingImagePlaceholder";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
 import { PreviewTimer } from "../components/PreviewTimer";
 import { ResultPreviewModal } from "../components/ResultPreviewModal";
@@ -78,9 +79,9 @@ export function ImageEditPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
   const selectedModel = useMemo(() => models.find((item) => item.id === model) ?? models[0] ?? null, [model, models]);
   const uploadedPreviewUrl = useMemo(() => (files[0] ? URL.createObjectURL(files[0]) : null), [files]);
   const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
-  const activeHistory = selectedHistory ?? (results.length === 0 ? pageRuns[0] ?? null : null);
+  const activeHistory = selectedHistory ?? (results.length === 0 && !loading ? pageRuns[0] ?? null : null);
   const latestResult = results[0] ?? null;
-  const previewResultUrl = activeHistory?.imageUrl ?? latestResult?.image_url ?? null;
+  const previewResultUrl = loading ? null : activeHistory?.imageUrl ?? latestResult?.image_url ?? null;
   const previewSourceUrl = useMemo(() => {
     const historySourceUrl = activeHistory?.sourceImageUrl ?? null;
     if (historySourceUrl && historySourceUrl !== previewResultUrl) {
@@ -257,7 +258,13 @@ export function ImageEditPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
                       tabIndex={previewResultUrl ? 0 : undefined}
                       onClick={previewResultUrl ? () => setPreviewOpen(true) : undefined}
                     >
-                      {previewResultUrl ? <img className="generated-image image-fit-contain interactive-preview-image" src={previewResultUrl} alt="写实结果" /> : <div className="compare-card after" />}
+                      {loading ? (
+                        <GeneratingImagePlaceholder percent={jobProgress?.percent} />
+                      ) : previewResultUrl ? (
+                        <img className="generated-image image-fit-contain interactive-preview-image" src={previewResultUrl} alt="写实结果" />
+                      ) : (
+                        <div className="compare-card after" />
+                      )}
                     </div>
                   </div>
                 </div>

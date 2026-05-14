@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AutoResizeTextarea } from "../components/AutoResizeTextarea";
 import { FloatingToast } from "../components/FloatingToast";
 import { GenerationProgress } from "../components/GenerationProgress";
+import { GeneratingImagePlaceholder } from "../components/GeneratingImagePlaceholder";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
 import { PreviewTimer } from "../components/PreviewTimer";
 import { PromptTemplateImporter } from "../components/PromptTemplateImporter";
@@ -79,8 +80,8 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
 
   const selectedModel = useMemo(() => models.find((item) => item.id === model) ?? models[0] ?? null, [model, models]);
   const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
-  const activeHistory = selectedHistory ?? (!result ? pageRuns[0] ?? null : null);
-  const previewResultUrl = activeHistory?.imageUrl ?? result?.image_url ?? null;
+  const activeHistory = selectedHistory ?? (!result && !loading ? pageRuns[0] ?? null : null);
+  const previewResultUrl = loading ? null : activeHistory?.imageUrl ?? result?.image_url ?? null;
 
   async function handleGenerate() {
     if (loading) {
@@ -97,6 +98,8 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
 
     setLoading(true);
     setError(null);
+    setResult(null);
+    setSelectedHistoryId(null);
     const startedAt = new Date().toISOString();
     setCurrentGenerationStartedAt(startedAt);
     setProgressState("running");
@@ -223,7 +226,11 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
                 <div className="drawer-content">
                   <div className="result-preview-pane result-preview-pane-single">
                     <span>生成结果</span>
-                    {previewResultUrl ? (
+                    {loading ? (
+                      <div className="generated-result-card compare image-edit-result-card generation-placeholder-card">
+                        <GeneratingImagePlaceholder percent={jobProgress?.percent} />
+                      </div>
+                    ) : previewResultUrl ? (
                       <div
                         className="generated-result-card compare image-edit-result-card interactive-result-card"
                         role="button"

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AssetSourcePicker } from "../components/AssetSourcePicker";
 import { FloatingToast } from "../components/FloatingToast";
 import { GenerationProgress } from "../components/GenerationProgress";
+import { GeneratingImagePlaceholder } from "../components/GeneratingImagePlaceholder";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
 import { PreviewTimer } from "../components/PreviewTimer";
 import { ResultPreviewModal } from "../components/ResultPreviewModal";
@@ -78,8 +79,8 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
   const selectedModel = useMemo(() => models.find((item) => item.id === model) ?? models[0] ?? null, [model, models]);
   const uploadedPreviewUrl = useMemo(() => (files[0] ? URL.createObjectURL(files[0]) : null), [files]);
   const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
-  const activeHistory = selectedHistory ?? (!result ? pageRuns[0] ?? null : null);
-  const previewResultUrl = activeHistory?.imageUrl ?? result?.image_url ?? null;
+  const activeHistory = selectedHistory ?? (!result && !loading ? pageRuns[0] ?? null : null);
+  const previewResultUrl = loading ? null : activeHistory?.imageUrl ?? result?.image_url ?? null;
   const previewSourceUrl = activeHistory?.sourceImageUrl ?? (uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? null);
 
   useEffect(() => {
@@ -106,6 +107,8 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
 
     setLoading(true);
     setError(null);
+    setResult(null);
+    setSelectedHistoryId(null);
     const startedAt = new Date().toISOString();
     setCurrentGenerationStartedAt(startedAt);
     setProgressState("running");
@@ -230,7 +233,13 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
                           : undefined
                       }
                     >
-                      {previewResultUrl ? <img className="generated-image image-fit-contain interactive-preview-image" src={previewResultUrl} alt="灰度结果" /> : <div className="grayscale-preview-card" />}
+                      {loading ? (
+                        <GeneratingImagePlaceholder percent={jobProgress?.percent} />
+                      ) : previewResultUrl ? (
+                        <img className="generated-image image-fit-contain interactive-preview-image" src={previewResultUrl} alt="灰度结果" />
+                      ) : (
+                        <div className="grayscale-preview-card" />
+                      )}
                     </div>
                   </div>
                 </div>

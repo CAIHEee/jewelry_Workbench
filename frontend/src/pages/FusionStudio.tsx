@@ -4,6 +4,7 @@ import { AutoResizeTextarea } from "../components/AutoResizeTextarea";
 import { AssetSourcePicker } from "../components/AssetSourcePicker";
 import { FloatingToast } from "../components/FloatingToast";
 import { GenerationProgress } from "../components/GenerationProgress";
+import { GeneratingImagePlaceholder } from "../components/GeneratingImagePlaceholder";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
 import { PreviewTimer } from "../components/PreviewTimer";
 import { PromptTemplateImporter } from "../components/PromptTemplateImporter";
@@ -98,8 +99,8 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
     [files, selectedAssets, uploadPreviewUrls],
   );
   const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
-  const activeHistory = selectedHistory ?? (!result ? pageRuns[0] ?? null : null);
-  const previewResultUrl = activeHistory?.imageUrl ?? result?.image_url ?? null;
+  const activeHistory = selectedHistory ?? (!result && !isSubmitting ? pageRuns[0] ?? null : null);
+  const previewResultUrl = isSubmitting ? null : activeHistory?.imageUrl ?? result?.image_url ?? null;
   const previewSourceUrl = activeHistory?.sourceImages?.[activeHistory.primaryImageIndex ?? 0] ?? activeHistory?.sourceImageUrl ?? selectedInputItems[primaryImageIndex]?.previewUrl ?? null;
 
   useEffect(() => {
@@ -136,6 +137,8 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
     }
 
     setIsSubmitting(true);
+    setResult(null);
+    setSelectedHistoryId(null);
     const startedAt = new Date().toISOString();
     setCurrentGenerationStartedAt(startedAt);
     setProgressState("running");
@@ -311,7 +314,7 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
                   <span className="drawer-hint">展开 / 收起</span>
                 </summary>
                 <div className="drawer-content">
-                  {previewResultUrl || result ? (
+                  {isSubmitting || previewResultUrl || result ? (
                     <div className="stack-list">
                       <div className="result-preview-pane result-preview-pane-single">
                         <span>融合结果</span>
@@ -331,7 +334,13 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
                               : undefined
                           }
                         >
-                          {previewResultUrl ? <img className="generated-image image-fit-contain interactive-preview-image" src={previewResultUrl} alt="融合结果" /> : <div className="compare-card after" />}
+                          {isSubmitting ? (
+                            <GeneratingImagePlaceholder percent={jobProgress?.percent} />
+                          ) : previewResultUrl ? (
+                            <img className="generated-image image-fit-contain interactive-preview-image" src={previewResultUrl} alt="融合结果" />
+                          ) : (
+                            <div className="compare-card after" />
+                          )}
                         </div>
                       </div>
 

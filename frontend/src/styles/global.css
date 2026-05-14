@@ -3900,6 +3900,15 @@ button.agent-generation-tile.agent-generation-clickable,
   font-size: 12px;
 }
 
+.generation-placeholder-card,
+.generated-result-card .generation-image-placeholder {
+  cursor: default;
+}
+
+.generated-result-card .generation-image-placeholder {
+  border-radius: inherit;
+}
+
 .agent-generation-failed {
   border-color: rgba(255, 109, 109, 0.22);
   background:

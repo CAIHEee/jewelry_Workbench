@@ -4,6 +4,7 @@ import { AutoResizeTextarea } from "./AutoResizeTextarea";
 import { AssetSourcePicker } from "./AssetSourcePicker";
 import { FloatingToast } from "./FloatingToast";
 import { GenerationProgress } from "./GenerationProgress";
+import { GeneratingImagePlaceholder } from "./GeneratingImagePlaceholder";
 import { LocalImageMarkupEditor } from "./LocalImageMarkupEditor";
 import { PageGenerationHistory } from "./PageGenerationHistory";
 import { PreviewTimer } from "./PreviewTimer";
@@ -122,8 +123,8 @@ export function ReferenceTransformModulePage({
   const selectedModel = useMemo(() => models.find((item) => item.id === model) ?? models[0] ?? null, [model, models]);
   const uploadedPreviewUrl = useMemo(() => (files[0] ? URL.createObjectURL(files[0]) : null), [files]);
   const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
-  const activeHistory = selectedHistory ?? (!result ? pageRuns[0] ?? null : null);
-  const previewResultUrl = activeHistory?.imageUrl ?? result?.image_url ?? null;
+  const activeHistory = selectedHistory ?? (!result && !loading ? pageRuns[0] ?? null : null);
+  const previewResultUrl = loading ? null : activeHistory?.imageUrl ?? result?.image_url ?? null;
   const previewSourceUrl = useMemo(() => {
     const historySourceUrl = activeHistory?.sourceImageUrl ?? null;
     if (historySourceUrl && historySourceUrl !== previewResultUrl) {
@@ -168,6 +169,8 @@ export function ReferenceTransformModulePage({
 
     setLoading(true);
     setError(null);
+    setResult(null);
+    setSelectedHistoryId(null);
     const startedAt = new Date().toISOString();
     setCurrentGenerationStartedAt(startedAt);
     setProgressState("running");
@@ -356,7 +359,13 @@ export function ReferenceTransformModulePage({
                       tabIndex={previewResultUrl ? 0 : undefined}
                       onClick={previewResultUrl ? () => setPreviewOpen(true) : undefined}
                     >
-                      {previewResultUrl ? <img className="generated-image image-fit-contain interactive-preview-image" src={previewResultUrl} alt={resultLabel} /> : <div className="compare-card after" />}
+                      {loading ? (
+                        <GeneratingImagePlaceholder percent={jobProgress?.percent} />
+                      ) : previewResultUrl ? (
+                        <img className="generated-image image-fit-contain interactive-preview-image" src={previewResultUrl} alt={resultLabel} />
+                      ) : (
+                        <div className="compare-card after" />
+                      )}
                     </div>
                   </div>
                 </div>
