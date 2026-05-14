@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 import { AutoResizeTextarea } from "./AutoResizeTextarea";
 import { AssetSourcePicker } from "./AssetSourcePicker";
 import { FloatingToast } from "./FloatingToast";
-import { GenerationProgress } from "./GenerationProgress";
 import { GeneratingImagePlaceholder } from "./GeneratingImagePlaceholder";
 import { LocalImageMarkupEditor } from "./LocalImageMarkupEditor";
 import { PageGenerationHistory } from "./PageGenerationHistory";
@@ -325,15 +324,6 @@ export function ReferenceTransformModulePage({
                 <AutoResizeTextarea className="prompt-textarea" rows={3} value={prompt} onChange={(event) => setPrompt(event.target.value)} />
               </label>
             ) : null}
-
-            <GenerationProgress
-              state={progressState}
-              phases={progressPhases}
-              successLabel={successLabel}
-              errorLabel={errorProgressLabel}
-              progressValue={jobProgress?.percent ?? null}
-              progressLabel={jobProgress?.label ?? null}
-            />
 
             <button className="primary-button align-start" type="button" onClick={handleSubmit} disabled={loading || !selectedModel}>
               {loading ? loadingLabel : submitLabel}

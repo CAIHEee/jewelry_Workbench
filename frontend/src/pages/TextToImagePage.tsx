@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AutoResizeTextarea } from "../components/AutoResizeTextarea";
 import { FloatingToast } from "../components/FloatingToast";
-import { GenerationProgress } from "../components/GenerationProgress";
 import { GeneratingImagePlaceholder } from "../components/GeneratingImagePlaceholder";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
 import { PreviewTimer } from "../components/PreviewTimer";
@@ -198,15 +197,6 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
               </div>
               <AutoResizeTextarea className="prompt-textarea" rows={3} value={prompt} onChange={(event) => setPrompt(event.target.value)} />
             </label>
-
-            <GenerationProgress
-              state={progressState}
-              phases={progressPhases}
-              successLabel="图片已完成"
-              errorLabel="文生图失败"
-              progressValue={jobProgress?.percent ?? null}
-              progressLabel={jobProgress?.label ?? null}
-            />
 
             <button className="primary-button align-start" type="button" onClick={handleGenerate} disabled={loading || !selectedModel}>
               {loading ? "生成中..." : "生成图片"}

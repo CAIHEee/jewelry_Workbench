@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import { AssetSourcePicker } from "../components/AssetSourcePicker";
 import { FloatingToast } from "../components/FloatingToast";
-import { GenerationProgress } from "../components/GenerationProgress";
 import { GeneratingImagePlaceholder } from "../components/GeneratingImagePlaceholder";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
 import { PreviewTimer } from "../components/PreviewTimer";
@@ -188,15 +187,6 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
               uploadLabel="上传参考图"
               onUploadFilesChange={setFiles}
               onSelectedAssetsChange={setSelectedAssets}
-            />
-
-            <GenerationProgress
-              state={progressState}
-              phases={progressPhases}
-              successLabel="灰度图已完成"
-              errorLabel="灰度转换失败"
-              progressValue={jobProgress?.percent ?? null}
-              progressLabel={jobProgress?.label ?? null}
             />
 
             <button className="primary-button align-start" type="button" onClick={handleGenerate} disabled={loading || !selectedModel}>

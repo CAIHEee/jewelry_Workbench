@@ -3,7 +3,6 @@ import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { AutoResizeTextarea } from "../components/AutoResizeTextarea";
 import { AssetSourcePicker } from "../components/AssetSourcePicker";
 import { FloatingToast } from "../components/FloatingToast";
-import { GenerationProgress } from "../components/GenerationProgress";
 import { GeneratingImagePlaceholder } from "../components/GeneratingImagePlaceholder";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
 import { PreviewTimer } from "../components/PreviewTimer";
@@ -288,15 +287,6 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
                 </div>
               </div>
             </details>
-
-            <GenerationProgress
-              state={progressState}
-              phases={progressPhases}
-              successLabel="融合已完成"
-              errorLabel="融合失败"
-              progressValue={jobProgress?.percent ?? null}
-              progressLabel={jobProgress?.label ?? null}
-            />
 
             <button className="primary-button align-start" type="submit" disabled={isSubmitting || !selectedModel}>
               {isSubmitting ? "提交中..." : "提交融合任务"}

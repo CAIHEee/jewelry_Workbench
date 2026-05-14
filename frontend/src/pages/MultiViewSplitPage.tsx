@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import { AssetSourcePicker } from "../components/AssetSourcePicker";
 import { FloatingToast } from "../components/FloatingToast";
-import { GenerationProgress } from "../components/GenerationProgress";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
 import { PreviewTimer } from "../components/PreviewTimer";
 import { ResultPreviewModal } from "../components/ResultPreviewModal";
@@ -293,15 +292,6 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
                 </div>
               </div>
             </details>
-
-            <GenerationProgress
-              state={progressState}
-              phases={progressPhases}
-              successLabel="切图已完成"
-              errorLabel="切图失败"
-              progressValue={jobProgress?.percent ?? null}
-              progressLabel={jobProgress?.label ?? null}
-            />
 
             <button className="primary-button align-start" type="button" onClick={handleSplit} disabled={loading}>
               {loading ? "切图中..." : "开始切图"}

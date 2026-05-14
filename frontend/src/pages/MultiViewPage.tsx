@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 import { AssetSourcePicker } from "../components/AssetSourcePicker";
 import { AutoResizeTextarea } from "../components/AutoResizeTextarea";
 import { FloatingToast } from "../components/FloatingToast";
-import { GenerationProgress } from "../components/GenerationProgress";
 import { GeneratingImagePlaceholder } from "../components/GeneratingImagePlaceholder";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
 import { PreviewTimer } from "../components/PreviewTimer";
@@ -255,15 +254,6 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
                 ))}
               </div>
             </div>
-
-            <GenerationProgress
-              state={progressState}
-              phases={progressPhases}
-              successLabel="多视图已完成"
-              errorLabel="多视图生成失败"
-              progressValue={jobProgress?.percent ?? null}
-              progressLabel={jobProgress?.label ?? null}
-            />
 
             <button className="primary-button align-start" type="button" onClick={handleGenerate} disabled={loading || !selectedModel || !hasInputSource}>
               {loading ? "生成中..." : `生成${generationCount > 1 ? ` ${generationCount} 张` : ""}多视图`}

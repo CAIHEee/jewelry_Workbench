@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import { AssetSourcePicker } from "../components/AssetSourcePicker";
 import { FloatingToast } from "../components/FloatingToast";
-import { GenerationProgress } from "../components/GenerationProgress";
 import { GeneratingImagePlaceholder } from "../components/GeneratingImagePlaceholder";
 import { PageGenerationHistory } from "../components/PageGenerationHistory";
 import { PreviewTimer } from "../components/PreviewTimer";
@@ -224,15 +223,6 @@ export function ImageEditPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
                 ))}
               </div>
             </div>
-
-            <GenerationProgress
-              state={progressState}
-              phases={progressPhases}
-              successLabel="写实图已完成"
-              errorLabel="写实转绘失败"
-              progressValue={jobProgress?.percent ?? null}
-              progressLabel={jobProgress?.label ?? null}
-            />
 
             <button className="primary-button align-start" type="button" onClick={handleSubmit} disabled={loading || !selectedModel}>
               {loading ? "生成中..." : `生成${generationCount > 1 ? ` ${generationCount} 张` : ""}写实图`}
