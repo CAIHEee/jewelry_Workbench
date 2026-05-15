@@ -57,6 +57,7 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
   const [strength, setStrength] = useState(0.75);
   const [result, setResult] = useState<FusionResult | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+  const [pendingHistoryId, setPendingHistoryId] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,8 +91,31 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
           })),
     [files, selectedAssets, uploadPreviewUrls],
   );
-  const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
-  const previewResultUrl = isSubmitting ? null : selectedHistory?.imageUrl ?? result?.image_url ?? null;
+  const historyItems = useMemo<ModuleHistoryEntry[]>(() => {
+    if (!pendingHistoryId || !isSubmitting) return pageRuns;
+    return [
+      {
+        id: pendingHistoryId,
+        kind: "fusion",
+        title: "生成中...",
+        model: "处理中",
+        provider: "任务队列",
+        status: "生成中...",
+        prompt: "",
+        imageUrl: null,
+        sourceImageUrl: null,
+        sourceImages: [],
+        primaryImageIndex: null,
+        splitItems: [],
+        createdAt: currentGenerationStartedAt ?? new Date().toISOString(),
+        source: "session",
+      },
+      ...pageRuns,
+    ];
+  }, [currentGenerationStartedAt, isSubmitting, pageRuns, pendingHistoryId]);
+  const selectedHistory = useMemo(() => historyItems.find((item) => item.id === selectedHistoryId) ?? null, [historyItems, selectedHistoryId]);
+  const isViewingPendingGeneration = Boolean(pendingHistoryId && selectedHistoryId === pendingHistoryId && isSubmitting);
+  const previewResultUrl = isViewingPendingGeneration ? null : selectedHistory?.imageUrl ?? result?.image_url ?? null;
   const previewSourceUrl = selectedHistory?.sourceImages?.[selectedHistory.primaryImageIndex ?? 0] ?? selectedHistory?.sourceImageUrl ?? selectedInputItems[primaryImageIndex]?.previewUrl ?? null;
 
   useEffect(() => {
@@ -129,8 +153,10 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
 
     setIsSubmitting(true);
     setResult(null);
-    setSelectedHistoryId(null);
     const startedAt = new Date().toISOString();
+    const nextPendingHistoryId = `pending-fusion-${Date.now()}`;
+    setPendingHistoryId(nextPendingHistoryId);
+    setSelectedHistoryId(nextPendingHistoryId);
     setCurrentGenerationStartedAt(startedAt);
     setProgressState("running");
     setJobProgress({ percent: 18, label: "多图融合任务排队中..." });
@@ -177,6 +203,7 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
       setProgressState("success");
     } catch (submitError) {
       setIsSubmitting(false);
+      setPendingHistoryId(null);
       setProgressState("error");
       setJobProgress({
         percent: 100,
@@ -186,6 +213,7 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
       return;
     }
 
+    setPendingHistoryId(null);
     setIsSubmitting(false);
   }
 
@@ -316,7 +344,7 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
                               : undefined
                           }
                         >
-                          {isSubmitting ? (
+                          {isViewingPendingGeneration ? (
                             <GeneratingImagePlaceholder percent={jobProgress?.percent} />
                           ) : previewResultUrl ? (
                             <img className="generated-image image-fit-contain interactive-preview-image" src={previewResultUrl} alt="融合结果" />
@@ -339,7 +367,7 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
               </details>
             </div>
 
-            <PageGenerationHistory title="多图融合历史" items={pageRuns} activeId={selectedHistoryId} onPreview={(item) => setSelectedHistoryId(item.id)} onDeleteHistory={onDeleteHistory} />
+            <PageGenerationHistory title="多图融合历史" items={historyItems} activeId={selectedHistoryId} onPreview={(item) => setSelectedHistoryId(item.id)} onDeleteHistory={onDeleteHistory} />
           </div>
         </div>
       </section>

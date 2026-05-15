@@ -100,6 +100,7 @@ export function ReferenceTransformModulePage({
   const [selectedAssets, setSelectedAssets] = useState<AssetItem[]>([]);
   const [result, setResult] = useState<GenerationResult | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+  const [pendingHistoryId, setPendingHistoryId] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -116,8 +117,31 @@ export function ReferenceTransformModulePage({
 
   const selectedModel = useMemo(() => models.find((item) => item.id === model) ?? models[0] ?? null, [model, models]);
   const uploadedPreviewUrl = useMemo(() => (files[0] ? URL.createObjectURL(files[0]) : null), [files]);
-  const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
-  const previewResultUrl = loading ? null : selectedHistory?.imageUrl ?? result?.image_url ?? null;
+  const historyItems = useMemo<ModuleHistoryEntry[]>(() => {
+    if (!pendingHistoryId || !loading) return pageRuns;
+    return [
+      {
+        id: pendingHistoryId,
+        kind: historyKind,
+        title: "生成中...",
+        model: "处理中",
+        provider: "任务队列",
+        status: "生成中...",
+        prompt: "",
+        imageUrl: null,
+        sourceImageUrl: null,
+        sourceImages: [],
+        primaryImageIndex: null,
+        splitItems: [],
+        createdAt: currentGenerationStartedAt ?? new Date().toISOString(),
+        source: "session",
+      },
+      ...pageRuns,
+    ];
+  }, [currentGenerationStartedAt, historyKind, loading, pageRuns, pendingHistoryId]);
+  const selectedHistory = useMemo(() => historyItems.find((item) => item.id === selectedHistoryId) ?? null, [historyItems, selectedHistoryId]);
+  const isViewingPendingGeneration = Boolean(pendingHistoryId && selectedHistoryId === pendingHistoryId && loading);
+  const previewResultUrl = isViewingPendingGeneration ? null : selectedHistory?.imageUrl ?? result?.image_url ?? null;
   const previewSourceUrl = useMemo(() => {
     const historySourceUrl = selectedHistory?.sourceImageUrl ?? null;
     if (historySourceUrl && historySourceUrl !== previewResultUrl) {
@@ -163,8 +187,10 @@ export function ReferenceTransformModulePage({
     setLoading(true);
     setError(null);
     setResult(null);
-    setSelectedHistoryId(null);
     const startedAt = new Date().toISOString();
+    const nextPendingHistoryId = `pending-${historyKind}-${Date.now()}`;
+    setPendingHistoryId(nextPendingHistoryId);
+    setSelectedHistoryId(nextPendingHistoryId);
     setCurrentGenerationStartedAt(startedAt);
     setProgressState("running");
     setJobProgress({ percent: 18, label: `${pageTitle}任务排队中...` });
@@ -236,6 +262,7 @@ export function ReferenceTransformModulePage({
       setProgressState("success");
     } catch (submitError) {
       setLoading(false);
+      setPendingHistoryId(null);
       setProgressState("error");
       setJobProgress({
         percent: 100,
@@ -245,6 +272,7 @@ export function ReferenceTransformModulePage({
       return;
     }
 
+    setPendingHistoryId(null);
     setLoading(false);
   }
 
@@ -343,7 +371,7 @@ export function ReferenceTransformModulePage({
                       tabIndex={previewResultUrl ? 0 : undefined}
                       onClick={previewResultUrl ? () => setPreviewOpen(true) : undefined}
                     >
-                      {loading ? (
+                      {isViewingPendingGeneration ? (
                         <GeneratingImagePlaceholder percent={jobProgress?.percent} />
                       ) : previewResultUrl ? (
                         <img className="generated-image image-fit-contain interactive-preview-image" src={previewResultUrl} alt={resultLabel} />
@@ -358,7 +386,7 @@ export function ReferenceTransformModulePage({
 
             <PageGenerationHistory
               title={historyTitle}
-              items={pageRuns}
+              items={historyItems}
               activeId={selectedHistoryId}
               onPreview={(item) => setSelectedHistoryId(item.id)}
               onDeleteHistory={onDeleteHistory}

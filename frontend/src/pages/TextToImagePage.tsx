@@ -50,6 +50,7 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
   const [imageSize, setImageSize] = useState("1K");
   const [result, setResult] = useState<GenerationResult | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+  const [pendingHistoryId, setPendingHistoryId] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -71,8 +72,31 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
   }, [model, models, resolvedDefaultModelId]);
 
   const selectedModel = useMemo(() => models.find((item) => item.id === model) ?? models[0] ?? null, [model, models]);
-  const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
-  const previewResultUrl = loading ? null : selectedHistory?.imageUrl ?? result?.image_url ?? null;
+  const historyItems = useMemo<ModuleHistoryEntry[]>(() => {
+    if (!pendingHistoryId || !loading) return pageRuns;
+    return [
+      {
+        id: pendingHistoryId,
+        kind: "text_to_image",
+        title: "生成中...",
+        model: "处理中",
+        provider: "任务队列",
+        status: "生成中...",
+        prompt: "",
+        imageUrl: null,
+        sourceImageUrl: null,
+        sourceImages: [],
+        primaryImageIndex: null,
+        splitItems: [],
+        createdAt: currentGenerationStartedAt ?? new Date().toISOString(),
+        source: "session",
+      },
+      ...pageRuns,
+    ];
+  }, [currentGenerationStartedAt, loading, pageRuns, pendingHistoryId]);
+  const selectedHistory = useMemo(() => historyItems.find((item) => item.id === selectedHistoryId) ?? null, [historyItems, selectedHistoryId]);
+  const isViewingPendingGeneration = Boolean(pendingHistoryId && selectedHistoryId === pendingHistoryId && loading);
+  const previewResultUrl = isViewingPendingGeneration ? null : selectedHistory?.imageUrl ?? result?.image_url ?? null;
 
   async function handleGenerate() {
     if (loading) {
@@ -90,8 +114,10 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
     setLoading(true);
     setError(null);
     setResult(null);
-    setSelectedHistoryId(null);
     const startedAt = new Date().toISOString();
+    const nextPendingHistoryId = `pending-text-to-image-${Date.now()}`;
+    setPendingHistoryId(nextPendingHistoryId);
+    setSelectedHistoryId(nextPendingHistoryId);
     setCurrentGenerationStartedAt(startedAt);
     setProgressState("running");
     setJobProgress({ percent: 18, label: "文生图任务排队中..." });
@@ -125,6 +151,7 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
       setProgressState("success");
     } catch (submitError) {
       setLoading(false);
+      setPendingHistoryId(null);
       setProgressState("error");
       setJobProgress({
         percent: 100,
@@ -134,6 +161,7 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
       return;
     }
 
+    setPendingHistoryId(null);
     setLoading(false);
   }
 
@@ -208,7 +236,7 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
                 <div className="drawer-content">
                   <div className="result-preview-pane result-preview-pane-single">
                     <span>生成结果</span>
-                    {loading ? (
+                    {isViewingPendingGeneration ? (
                       <div className="generated-result-card compare image-edit-result-card generation-placeholder-card">
                         <GeneratingImagePlaceholder percent={jobProgress?.percent} />
                       </div>
@@ -239,7 +267,7 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
 
             <PageGenerationHistory
               title="文生图历史"
-              items={pageRuns}
+              items={historyItems}
               activeId={selectedHistoryId}
               onPreview={(item) => setSelectedHistoryId(item.id)}
               onDeleteHistory={onDeleteHistory}

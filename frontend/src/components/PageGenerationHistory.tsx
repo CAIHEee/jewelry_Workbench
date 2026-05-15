@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { FloatingToast } from "./FloatingToast";
 import { useViewport } from "../hooks/useViewport";
@@ -16,11 +16,18 @@ interface PageGenerationHistoryProps {
 
 export function PageGenerationHistory({ title: _title, items, activeId, onPreview, onDeleteHistory }: PageGenerationHistoryProps) {
   const { isMobile } = useViewport();
+  const bodyRef = useRef<HTMLDivElement | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [pendingDeleteItem, setPendingDeleteItem] = useState<ModuleHistoryEntry | null>(null);
   const [deletingHistoryId, setDeletingHistoryId] = useState<string | null>(null);
   const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const sidebarTitle = "历史记录";
+  const itemsKey = useMemo(() => items.map((item) => item.id).join("|"), [items]);
+
+  useLayoutEffect(() => {
+    if (activeId || collapsed || isMobile) return;
+    bodyRef.current?.scrollTo({ top: 0, behavior: "auto" });
+  }, [activeId, collapsed, isMobile, itemsKey]);
 
   function resolveDisplayTitle(item: ModuleHistoryEntry): string {
     return appendSecondSuffixToName(item.title, item.createdAt);
@@ -71,7 +78,7 @@ export function PageGenerationHistory({ title: _title, items, activeId, onPrevie
         ) : null}
       </div>
 
-      <div className={items.length === 0 ? "page-history-sidebar-body page-history-sidebar-body-empty" : "page-history-sidebar-body"}>
+      <div ref={bodyRef} className={items.length === 0 ? "page-history-sidebar-body page-history-sidebar-body-empty" : "page-history-sidebar-body"}>
         {items.length > 0 ? (
           <div className="page-history-sidebar-list">
             {items.map((item) => (

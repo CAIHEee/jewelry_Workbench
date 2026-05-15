@@ -62,6 +62,7 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
   const [results, setResults] = useState<GenerationResult[]>([]);
   const [generationCount, setGenerationCount] = useState<GenerationCount>(1);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+  const [pendingHistoryId, setPendingHistoryId] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,9 +79,32 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
 
   const selectedModel = useMemo(() => models.find((item) => item.id === model) ?? models[0] ?? null, [model, models]);
   const uploadedPreviewUrl = useMemo(() => (files[0] ? URL.createObjectURL(files[0]) : null), [files]);
-  const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
+  const historyItems = useMemo<ModuleHistoryEntry[]>(() => {
+    if (!pendingHistoryId || !loading) return pageRuns;
+    return [
+      {
+        id: pendingHistoryId,
+        kind: "multi_view",
+        title: "生成中...",
+        model: "处理中",
+        provider: "任务队列",
+        status: "生成中...",
+        prompt: "",
+        imageUrl: null,
+        sourceImageUrl: null,
+        sourceImages: [],
+        primaryImageIndex: null,
+        splitItems: [],
+        createdAt: currentGenerationStartedAt ?? new Date().toISOString(),
+        source: "session",
+      },
+      ...pageRuns,
+    ];
+  }, [currentGenerationStartedAt, loading, pageRuns, pendingHistoryId]);
+  const selectedHistory = useMemo(() => historyItems.find((item) => item.id === selectedHistoryId) ?? null, [historyItems, selectedHistoryId]);
+  const isViewingPendingGeneration = Boolean(pendingHistoryId && selectedHistoryId === pendingHistoryId && loading);
   const latestResult = results[0] ?? null;
-  const previewResultUrl = loading ? null : selectedHistory?.imageUrl ?? latestResult?.image_url ?? null;
+  const previewResultUrl = isViewingPendingGeneration ? null : selectedHistory?.imageUrl ?? latestResult?.image_url ?? null;
   const previewSourceUrl = selectedHistory?.sourceImageUrl ?? latestResult?.source_image_url ?? (uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? null);
   const selectedAssetRefs = useMemo(
     () =>
@@ -126,8 +150,10 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
 
     setLoading(true);
     setResults([]);
-    setSelectedHistoryId(null);
     const startedAt = new Date().toISOString();
+    const nextPendingHistoryId = `pending-multi-view-${Date.now()}`;
+    setPendingHistoryId(nextPendingHistoryId);
+    setSelectedHistoryId(nextPendingHistoryId);
     setCurrentGenerationStartedAt(startedAt);
     setProgressState("running");
     setJobProgress({ percent: 18, label: "多视图任务排队中..." });
@@ -165,6 +191,7 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
       }
 
       setResults([...validResponses].reverse());
+      setSelectedHistoryId(null);
       setJobProgress({ percent: 100, label: generationCount > 1 ? `已完成 ${validResponses.length}/${generationCount} 张` : "已完成" });
       setProgressState("success");
       await onRefreshHistory?.();
@@ -176,6 +203,7 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
       }
     } catch (submitError) {
       setLoading(false);
+      setPendingHistoryId(null);
       setProgressState("error");
       setJobProgress({
         percent: 100,
@@ -185,6 +213,7 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
       return;
     }
 
+    setPendingHistoryId(null);
     setLoading(false);
   }
 
@@ -271,7 +300,7 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
                       tabIndex={previewResultUrl ? 0 : undefined}
                       onClick={previewResultUrl ? () => setPreviewOpen(true) : undefined}
                     >
-                      {loading ? (
+                      {isViewingPendingGeneration ? (
                         <GeneratingImagePlaceholder percent={jobProgress?.percent} />
                       ) : previewResultUrl ? (
                         <img className="generated-image image-fit-contain interactive-preview-image" src={previewResultUrl} alt="多视图结果" />
@@ -286,7 +315,7 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
 
             <PageGenerationHistory
               title="多视图历史"
-              items={pageRuns}
+              items={historyItems}
               activeId={selectedHistoryId}
               onPreview={(item) => setSelectedHistoryId(item.id)}
               onDeleteHistory={onDeleteHistory}

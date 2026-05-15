@@ -60,6 +60,7 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
   const [previewOpen, setPreviewOpen] = useState(false);
   const [splitResult, setSplitResult] = useState<MultiViewSplitResponse | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+  const [pendingHistoryId, setPendingHistoryId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [splitXRatio, setSplitXRatio] = useState(0.5);
@@ -86,10 +87,33 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
     ["--gap-y" as const]: `${(gapYRatio * 100).toFixed(2)}%`,
   } as CSSProperties;
 
-  const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
+  const currentSourcePreviewUrl = localSourcePreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? null;
+  const historyItems = useMemo<ModuleHistoryEntry[]>(() => {
+    if (!pendingHistoryId || !loading) return pageRuns;
+    return [
+      {
+        id: pendingHistoryId,
+        kind: "multi_view_split",
+        title: "生成中...",
+        model: "处理中",
+        provider: "任务队列",
+        status: "生成中...",
+        prompt: "",
+        imageUrl: null,
+        sourceImageUrl: currentSourcePreviewUrl,
+        sourceImages: [],
+        primaryImageIndex: null,
+        splitItems: [],
+        createdAt: currentGenerationStartedAt ?? new Date().toISOString(),
+        source: "session",
+      },
+      ...pageRuns,
+    ];
+  }, [currentGenerationStartedAt, currentSourcePreviewUrl, loading, pageRuns, pendingHistoryId]);
+  const selectedHistory = useMemo(() => historyItems.find((item) => item.id === selectedHistoryId) ?? null, [historyItems, selectedHistoryId]);
+  const isViewingPendingGeneration = Boolean(pendingHistoryId && selectedHistoryId === pendingHistoryId && loading);
   const hasCurrentSourceSelection = Boolean(localSourcePreviewUrl || selectedAssets[0]);
-  const sourcePreviewUrl =
-    localSourcePreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? selectedHistory?.sourceImageUrl ?? null;
+  const sourcePreviewUrl = currentSourcePreviewUrl ?? selectedHistory?.sourceImageUrl ?? null;
   const activeSplitItems = useMemo<MultiViewSplitItem[]>(
     () => {
       if (selectedHistory?.splitItems.length) {
@@ -172,6 +196,10 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
     setLoading(true);
     setError(null);
     const startedAt = new Date().toISOString();
+    const nextPendingHistoryId = `pending-multi-view-split-${Date.now()}`;
+    setPendingHistoryId(nextPendingHistoryId);
+    setSelectedHistoryId(nextPendingHistoryId);
+    setActiveTab("result");
     setCurrentGenerationStartedAt(startedAt);
     setProgressState("running");
     setJobProgress({ percent: 18, label: "多视图切图任务排队中..." });
@@ -224,6 +252,7 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
       });
     } catch (splitError) {
       setLoading(false);
+      setPendingHistoryId(null);
       setProgressState("error");
       setJobProgress({
         percent: 100,
@@ -233,6 +262,7 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
       return;
     }
 
+    setPendingHistoryId(null);
     setLoading(false);
   }
 
@@ -305,7 +335,7 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
                   type="button"
                   className={activeTab === "result" ? "split-preview-tab active" : "split-preview-tab"}
                   onClick={() => setActiveTab("result")}
-                  disabled={activeSplitItems.length === 0}
+                  disabled={activeSplitItems.length === 0 && !isViewingPendingGeneration}
                 >
                   切图结果
                 </button>
@@ -350,7 +380,12 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
                       <PreviewTimer startedAt={currentGenerationStartedAt} running={loading} />
                     </div>
 
-                    {activeSplitItems.length ? (
+                    {isViewingPendingGeneration ? (
+                      <div className="panel-subcard compact split-empty-state">
+                        <p className="muted">{jobProgress?.label ?? "多视图切图任务处理中..."}</p>
+                        <span className="status-pill online">{Math.round(jobProgress?.percent ?? 18)}%</span>
+                      </div>
+                    ) : activeSplitItems.length ? (
                       <>
                         <div className="split-result-thumbnail-row">
                           {activeSplitItems.map((item) => (
@@ -398,9 +433,14 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
 
             <PageGenerationHistory
               title="多视图切图历史"
-              items={pageRuns}
+              items={historyItems}
               activeId={selectedHistoryId}
               onPreview={(item) => {
+                if (item.id === pendingHistoryId) {
+                  setSelectedHistoryId(item.id);
+                  setActiveTab("result");
+                  return;
+                }
                 setFiles([]);
                 setSelectedAssets([]);
                 setSplitResult(null);

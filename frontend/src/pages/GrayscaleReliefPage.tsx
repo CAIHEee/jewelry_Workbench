@@ -52,6 +52,7 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
   const [selectedAssets, setSelectedAssets] = useState<AssetItem[]>([]);
   const [result, setResult] = useState<GenerationResult | null>(null);
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+  const [pendingHistoryId, setPendingHistoryId] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,8 +71,31 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
 
   const selectedModel = useMemo(() => models.find((item) => item.id === model) ?? models[0] ?? null, [model, models]);
   const uploadedPreviewUrl = useMemo(() => (files[0] ? URL.createObjectURL(files[0]) : null), [files]);
-  const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
-  const previewResultUrl = loading ? null : selectedHistory?.imageUrl ?? result?.image_url ?? null;
+  const historyItems = useMemo<ModuleHistoryEntry[]>(() => {
+    if (!pendingHistoryId || !loading) return pageRuns;
+    return [
+      {
+        id: pendingHistoryId,
+        kind: "grayscale_relief",
+        title: "生成中...",
+        model: "处理中",
+        provider: "任务队列",
+        status: "生成中...",
+        prompt: "",
+        imageUrl: null,
+        sourceImageUrl: null,
+        sourceImages: [],
+        primaryImageIndex: null,
+        splitItems: [],
+        createdAt: currentGenerationStartedAt ?? new Date().toISOString(),
+        source: "session",
+      },
+      ...pageRuns,
+    ];
+  }, [currentGenerationStartedAt, loading, pageRuns, pendingHistoryId]);
+  const selectedHistory = useMemo(() => historyItems.find((item) => item.id === selectedHistoryId) ?? null, [historyItems, selectedHistoryId]);
+  const isViewingPendingGeneration = Boolean(pendingHistoryId && selectedHistoryId === pendingHistoryId && loading);
+  const previewResultUrl = isViewingPendingGeneration ? null : selectedHistory?.imageUrl ?? result?.image_url ?? null;
   const previewSourceUrl = selectedHistory?.sourceImageUrl ?? (uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? null);
 
   useEffect(() => {
@@ -99,8 +123,10 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
     setLoading(true);
     setError(null);
     setResult(null);
-    setSelectedHistoryId(null);
     const startedAt = new Date().toISOString();
+    const nextPendingHistoryId = `pending-grayscale-relief-${Date.now()}`;
+    setPendingHistoryId(nextPendingHistoryId);
+    setSelectedHistoryId(nextPendingHistoryId);
     setCurrentGenerationStartedAt(startedAt);
     setProgressState("running");
     setJobProgress({ percent: 18, label: "灰度转换任务排队中..." });
@@ -143,6 +169,7 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
       setProgressState("success");
     } catch (submitError) {
       setLoading(false);
+      setPendingHistoryId(null);
       setProgressState("error");
       setJobProgress({
         percent: 100,
@@ -152,6 +179,7 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
       return;
     }
 
+    setPendingHistoryId(null);
     setLoading(false);
   }
 
@@ -215,7 +243,7 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
                           : undefined
                       }
                     >
-                      {loading ? (
+                      {isViewingPendingGeneration ? (
                         <GeneratingImagePlaceholder percent={jobProgress?.percent} />
                       ) : previewResultUrl ? (
                         <img className="generated-image image-fit-contain interactive-preview-image" src={previewResultUrl} alt="灰度结果" />
@@ -230,7 +258,7 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
 
             <PageGenerationHistory
               title="转灰度图历史"
-              items={pageRuns}
+              items={historyItems}
               activeId={selectedHistoryId}
               onPreview={(item) => setSelectedHistoryId(item.id)}
               onDeleteHistory={onDeleteHistory}
