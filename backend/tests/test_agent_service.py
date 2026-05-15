@@ -1536,7 +1536,7 @@ def test_custom_refine_prompt_does_not_append_default_prompt(auth_client: TestCl
     response = agent_client.post(
         f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
         json={
-            "content": "仅自定义精修：只把金属改成哑光质感",
+            "content": "产品精修：只把金属改成哑光质感",
             "attachments": [
                 {"name": "sketch.png", "storage_url": "https://example.com/sketch.png"},
                 {"name": "current.png", "storage_url": "https://example.com/current.png"},
@@ -1549,7 +1549,7 @@ def test_custom_refine_prompt_does_not_append_default_prompt(auth_client: TestCl
     action = detail["actions"][0]
     assert action["module_key"] == "product_refine"
     assert action["prompt"] == "只把金属改成哑光质感"
-    assert action["source_image_urls"] == ["https://example.com/sketch.png", "https://example.com/current.png"]
+    assert action["source_image_urls"] == ["https://example.com/current.png"]
 
 
 def test_agent_refine_remove_selected_uses_local_delete_template(auth_client: TestClient, monkeypatch) -> None:
@@ -1575,6 +1575,7 @@ def test_agent_refine_remove_selected_uses_local_delete_template(auth_client: Te
     detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
     action = detail["actions"][0]
     assert action["module_key"] == "product_refine"
+    assert action["source_image_urls"] == ["https://example.com/marked.png"]
     assert "严格移除参考图中黄色线圈定/标注的区域" in action["prompt"]
     assert "画面其他部分保持100%不变" in action["prompt"]
 
@@ -1787,6 +1788,69 @@ def test_generation_result_rejects_action_module_mismatch(auth_client: TestClien
     )
 
     assert registered.status_code == 404
+
+
+def test_design_generation_result_requires_action_id(auth_client: TestClient) -> None:
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "design"})
+    conversation_id = created.json()["id"]
+
+    registered = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/generation-result",
+        json={
+            "module_key": "text_to_image",
+            "image_url": "https://example.com/design-result.png",
+            "name": "设计出图",
+        },
+    )
+
+    assert registered.status_code == 400
+    assert registered.json()["detail"] == "Design generation results must reference an Agent action."
+
+
+def test_design_generation_result_rejects_workflow_module(auth_client: TestClient, monkeypatch) -> None:
+    async def fake_design_llm(self, **kwargs):  # noqa: ANN001
+        return {
+            "design_brief": {
+                "category": "胸针",
+                "gemstone": "冰种翡翠蛋面",
+                "metal": "18K黄金",
+                "style": "新中式典雅",
+                "craft": "包镶",
+                "scene": "晚宴聚会",
+            },
+            "missing_slots": [],
+            "pending_design_slot": "",
+            "should_generate": True,
+            "latest_design_mode": "text_to_image",
+            "reply": "信息已经足够生成首版设计图。",
+            "options": [],
+        }
+
+    monkeypatch.setattr(AgentService, "_call_design_brief_llm", fake_design_llm)
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "design"})
+    conversation_id = created.json()["id"]
+
+    response = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={"content": "生成首版设计图", "attachments": []},
+    )
+    assert response.status_code == 200
+    action = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()["actions"][0]
+
+    registered = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/generation-result",
+        json={
+            "action_id": action["id"],
+            "module_key": "product_refine",
+            "image_url": "https://example.com/refine-result.png",
+            "name": "产品精修",
+        },
+    )
+
+    assert registered.status_code == 400
+    assert registered.json()["detail"] == "Design conversations only accept design generation results."
 
 
 def test_regenerate_grayscale_reuses_original_module_source(auth_client: TestClient, monkeypatch) -> None:

@@ -70,17 +70,9 @@ export function TextToImagePage({ onRecordRun, pageRuns, onDeleteHistory }: Text
     }
   }, [model, models, resolvedDefaultModelId]);
 
-  useEffect(() => {
-    if (result || selectedHistoryId || pageRuns.length === 0) {
-      return;
-    }
-    setSelectedHistoryId(pageRuns[0].id);
-  }, [pageRuns, result, selectedHistoryId]);
-
   const selectedModel = useMemo(() => models.find((item) => item.id === model) ?? models[0] ?? null, [model, models]);
   const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
-  const activeHistory = selectedHistory ?? (!result && !loading ? pageRuns[0] ?? null : null);
-  const previewResultUrl = loading ? null : activeHistory?.imageUrl ?? result?.image_url ?? null;
+  const previewResultUrl = loading ? null : selectedHistory?.imageUrl ?? result?.image_url ?? null;
 
   async function handleGenerate() {
     if (loading) {

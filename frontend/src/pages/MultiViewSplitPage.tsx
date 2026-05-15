@@ -86,18 +86,10 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
     ["--gap-y" as const]: `${(gapYRatio * 100).toFixed(2)}%`,
   } as CSSProperties;
 
-  useEffect(() => {
-    if (splitResult || selectedHistoryId || pageRuns.length === 0) {
-      return;
-    }
-    setSelectedHistoryId(pageRuns[0].id);
-  }, [pageRuns, selectedHistoryId, splitResult]);
-
   const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
-  const activeHistory = selectedHistory ?? (!splitResult ? pageRuns[0] ?? null : null);
   const hasCurrentSourceSelection = Boolean(localSourcePreviewUrl || selectedAssets[0]);
   const sourcePreviewUrl =
-    localSourcePreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? activeHistory?.sourceImageUrl ?? null;
+    localSourcePreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? selectedHistory?.sourceImageUrl ?? null;
   const activeSplitItems = useMemo<MultiViewSplitItem[]>(
     () => {
       if (selectedHistory?.splitItems.length) {
@@ -109,18 +101,18 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
             height: item.height,
         }));
       }
-      if (!hasCurrentSourceSelection && activeHistory?.splitItems.length) {
-        return activeHistory.splitItems.map((item) => ({
+      if (!hasCurrentSourceSelection && splitResult?.items.length) {
+        return splitResult.items.map((item) => ({
           view: item.view,
-          image_url: item.imageUrl,
-          storage_url: item.storageUrl ?? null,
+          image_url: item.image_url,
+          storage_url: item.storage_url ?? null,
           width: item.width,
           height: item.height,
         }));
       }
-      return splitResult?.items ?? [];
+      return [];
     },
-    [activeHistory, hasCurrentSourceSelection, selectedHistory, splitResult],
+    [hasCurrentSourceSelection, selectedHistory, splitResult],
   );
 
   useEffect(() => {

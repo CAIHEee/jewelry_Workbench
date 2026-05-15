@@ -168,12 +168,6 @@ const designResultStepOptions: AgentFlowOption[] = [
     behavior: "draft_design_revision",
   },
   {
-    title: "局部修改",
-    helper: "标注设计图上的局部区域，再提交精修",
-    prompt: "Agent精修：删除选中内容",
-    behavior: "local_refine",
-  },
-  {
     title: "结束对话",
     helper: "本轮设计结果已确认，暂时不继续生成",
     prompt: "结束对话",
@@ -183,19 +177,9 @@ const designResultStepOptions: AgentFlowOption[] = [
 
 const refineChoiceOptions: AgentFlowOption[] = [
   {
-    title: "进行默认精修",
-    helper: "使用系统默认精修提示词，直接提交产品精修",
-    prompt: "直接精修",
-  },
-  {
-    title: "补充精修提示词",
-    helper: "在默认精修策略基础上，补充你想重点修改的地方",
+    title: "添加精修提示词",
+    helper: "仅按你输入的提示词修改当前图片",
     prompt: "产品精修：",
-  },
-  {
-    title: "仅用自定义提示词",
-    helper: "不叠加默认精修词，只按你的提示词进行精修",
-    prompt: "仅自定义精修：",
   },
   {
     title: "局部修改",
@@ -306,7 +290,7 @@ function normalizeOptionCardText(value: string) {
 }
 
 function getRefineAttachments(context: ResultOptionContext): AgentAssetRef[] {
-  const refs = context.resultAsset ? [context.resultAsset, ...(context.sourceAssets ?? [])] : [...(context.sourceAssets ?? [])];
+  const refs = context.resultAsset ? [context.resultAsset] : [...(context.sourceAssets ?? [])].slice(0, 1);
   const seen = new Set<string>();
   return refs.filter((item) => {
     const key = item.asset_id ?? item.storage_url ?? item.preview_url ?? item.name;
@@ -1065,7 +1049,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     }
     if (option.behavior === "draft_design_revision") {
       setDraft(option.prompt);
-      setPendingDraftAttachments(context.sourceAssets?.length ? context.sourceAssets : null);
+      setPendingDraftAttachments(null);
       return;
     }
     if (option.behavior === "end") {
@@ -1107,10 +1091,6 @@ export function AgentPage({ assetItems }: AgentPageProps) {
     }
     const refs = getRefineAttachments(pendingRefineContext ?? {});
     setPendingRefineContext(null);
-    if (option.prompt === "直接精修") {
-      void handleSend(option.prompt, refs.length ? refs : undefined);
-      return;
-    }
     setDraft(option.prompt);
     setPendingDraftAttachments(refs.length ? refs : null);
   }
@@ -1158,10 +1138,8 @@ export function AgentPage({ assetItems }: AgentPageProps) {
         preview_url: uploaded.preview_url,
       };
       const promptText = localRefinePrompt.trim();
-      const cleanSourceRef = pendingLocalRefineContext?.resultAsset ?? latestGeneratedAsset;
-      const attachments = cleanSourceRef ? [cleanSourceRef, markupRef] : [markupRef];
       clearLocalRefineState();
-      await handleSend(`Agent精修：${promptText || "删除选中内容"}`, attachments);
+      await handleSend(`Agent精修：${promptText || "删除选中内容"}`, [markupRef]);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "局部修改提交失败");
     }

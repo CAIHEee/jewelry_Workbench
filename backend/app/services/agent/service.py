@@ -676,6 +676,11 @@ class AgentService:
             state = self._load_json(record.state_json) or {}
             resolved_action_id = action_id if action_id else state.get("last_action_id") if isinstance(state.get("last_action_id"), str) else None
             action_record = session.get(AgentAction, resolved_action_id) if resolved_action_id else None
+            if conversation.mode == "design":
+                if not action_id:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Design generation results must reference an Agent action.")
+                if module_key not in {"text_to_image", "gemstone_design"}:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Design conversations only accept design generation results.")
             if resolved_action_id and (
                 action_record is None
                 or action_record.user_id != current_user.id
@@ -3016,7 +3021,7 @@ class AgentService:
         prompt = rule.get("default_prompt") or content
         if module_key == "product_refine":
             prompt = self._build_product_refine_prompt(content)
-        source_assets = attachments if module_key == "product_refine" else attachments[:1]
+        source_assets = attachments[-1:] if module_key == "product_refine" else attachments[:1]
         return {
             "reply": reply_map.get(module_key) or self._fallback_reply("workflow", content, attachments),
             "action_card": {
@@ -3054,10 +3059,10 @@ class AgentService:
             if custom_prompt:
                 if self._is_remove_selected_refine_intent(custom_prompt):
                     return PRODUCT_REFINE_REMOVE_SELECTED_PROMPT
-                return f"{PRODUCT_REFINE_DEFAULT_PROMPT}\n用户补充要求：{custom_prompt}"
+                return custom_prompt
         if self._is_remove_selected_refine_intent(stripped):
             return PRODUCT_REFINE_REMOVE_SELECTED_PROMPT
-        return f"{PRODUCT_REFINE_DEFAULT_PROMPT}\n用户补充要求：{stripped}"
+        return stripped
 
     def _is_remove_selected_refine_intent(self, content: str) -> bool:
         normalized = content.strip().lower().replace(" ", "")

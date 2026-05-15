@@ -114,27 +114,21 @@ export function ReferenceTransformModulePage({
     if (!model || !models.some((item) => item.id === model)) setModel(resolvedDefaultModelId);
   }, [model, models, resolvedDefaultModelId]);
 
-  useEffect(() => {
-    if (result || selectedHistoryId || pageRuns.length === 0) return;
-    setSelectedHistoryId(pageRuns[0].id);
-  }, [pageRuns, result, selectedHistoryId]);
-
   const selectedModel = useMemo(() => models.find((item) => item.id === model) ?? models[0] ?? null, [model, models]);
   const uploadedPreviewUrl = useMemo(() => (files[0] ? URL.createObjectURL(files[0]) : null), [files]);
   const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
-  const activeHistory = selectedHistory ?? (!result && !loading ? pageRuns[0] ?? null : null);
-  const previewResultUrl = loading ? null : activeHistory?.imageUrl ?? result?.image_url ?? null;
+  const previewResultUrl = loading ? null : selectedHistory?.imageUrl ?? result?.image_url ?? null;
   const previewSourceUrl = useMemo(() => {
-    const historySourceUrl = activeHistory?.sourceImageUrl ?? null;
+    const historySourceUrl = selectedHistory?.sourceImageUrl ?? null;
     if (historySourceUrl && historySourceUrl !== previewResultUrl) {
       return historySourceUrl;
     }
-    const historySourceImage = activeHistory?.sourceImages[0] ?? null;
+    const historySourceImage = selectedHistory?.sourceImages[0] ?? null;
     if (historySourceImage && historySourceImage !== previewResultUrl) {
       return historySourceImage;
     }
     return markupPreviewUrl ?? uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? null;
-  }, [activeHistory, markupPreviewUrl, previewResultUrl, selectedAssets, uploadedPreviewUrl]);
+  }, [markupPreviewUrl, previewResultUrl, selectedAssets, selectedHistory, uploadedPreviewUrl]);
   const editableSourceUrl = uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? selectedAssets[0]?.fileUrl ?? null;
   const editableSourceName = files[0]?.name ?? selectedAssets[0]?.name ?? null;
 

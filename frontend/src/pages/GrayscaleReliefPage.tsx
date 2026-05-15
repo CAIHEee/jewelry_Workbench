@@ -68,19 +68,11 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
     }
   }, [grayscaleDefaultModelId, model, models]);
 
-  useEffect(() => {
-    if (result || selectedHistoryId || pageRuns.length === 0) {
-      return;
-    }
-    setSelectedHistoryId(pageRuns[0].id);
-  }, [pageRuns, result, selectedHistoryId]);
-
   const selectedModel = useMemo(() => models.find((item) => item.id === model) ?? models[0] ?? null, [model, models]);
   const uploadedPreviewUrl = useMemo(() => (files[0] ? URL.createObjectURL(files[0]) : null), [files]);
   const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
-  const activeHistory = selectedHistory ?? (!result && !loading ? pageRuns[0] ?? null : null);
-  const previewResultUrl = loading ? null : activeHistory?.imageUrl ?? result?.image_url ?? null;
-  const previewSourceUrl = activeHistory?.sourceImageUrl ?? (uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? null);
+  const previewResultUrl = loading ? null : selectedHistory?.imageUrl ?? result?.image_url ?? null;
+  const previewSourceUrl = selectedHistory?.sourceImageUrl ?? (uploadedPreviewUrl ?? selectedAssets[0]?.previewUrl ?? selectedAssets[0]?.storageUrl ?? null);
 
   useEffect(() => {
     return () => {

@@ -73,13 +73,6 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
     }
   }, [defaultModelId, model, models]);
 
-  useEffect(() => {
-    if (result || selectedHistoryId || pageRuns.length === 0) {
-      return;
-    }
-    setSelectedHistoryId(pageRuns[0].id);
-  }, [pageRuns, result, selectedHistoryId]);
-
   const selectedModel = useMemo(() => models.find((item) => item.id === model) ?? models[0] ?? null, [model, models]);
   const uploadPreviewUrls = useMemo(() => files.map((file) => URL.createObjectURL(file)), [files]);
   const selectedInputItems = useMemo(
@@ -98,9 +91,8 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
     [files, selectedAssets, uploadPreviewUrls],
   );
   const selectedHistory = useMemo(() => pageRuns.find((item) => item.id === selectedHistoryId) ?? null, [pageRuns, selectedHistoryId]);
-  const activeHistory = selectedHistory ?? (!result && !isSubmitting ? pageRuns[0] ?? null : null);
-  const previewResultUrl = isSubmitting ? null : activeHistory?.imageUrl ?? result?.image_url ?? null;
-  const previewSourceUrl = activeHistory?.sourceImages?.[activeHistory.primaryImageIndex ?? 0] ?? activeHistory?.sourceImageUrl ?? selectedInputItems[primaryImageIndex]?.previewUrl ?? null;
+  const previewResultUrl = isSubmitting ? null : selectedHistory?.imageUrl ?? result?.image_url ?? null;
+  const previewSourceUrl = selectedHistory?.sourceImages?.[selectedHistory.primaryImageIndex ?? 0] ?? selectedHistory?.sourceImageUrl ?? selectedInputItems[primaryImageIndex]?.previewUrl ?? null;
 
   useEffect(() => {
     return () => {
