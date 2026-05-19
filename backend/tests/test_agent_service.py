@@ -672,6 +672,40 @@ def test_design_freeform_other_input_extracts_jade_color_and_shape() -> None:
     assert "- 翡翠形制：蛋面" in summary
 
 
+def test_design_chitchat_is_not_saved_as_concept_or_supplement() -> None:
+    service = AgentService()
+    brief: dict[str, object] = {}
+
+    service._merge_design_content_into_brief(brief, "你好")
+
+    assert brief == {}
+
+
+def test_design_sanitizes_chitchat_values_from_llm_brief() -> None:
+    service = AgentService()
+
+    brief = service._sanitize_design_brief({"category": "胸针", "concept": "你好", "supplement": "你好"})
+
+    assert brief == {"category": "胸针"}
+
+
+def test_design_updates_jade_shape_without_polluting_concept() -> None:
+    service = AgentService()
+    brief = {
+        "category": "胸针",
+        "gemstone": "翡翠飘花单颗主石",
+        "concept": "自然花叶",
+    }
+
+    service._merge_design_content_into_brief(brief, "翡翠形制是三角形")
+
+    assert brief["gemstone"] == "翡翠飘花三角形单颗主石"
+    assert brief["concept"] == "自然花叶"
+    assert "supplement" not in brief
+    summary = service._format_design_brief_for_review(brief, None)
+    assert "- 翡翠形制：三角形" in summary
+
+
 def test_jade_gemstone_options_prefer_section_six_knowledge_for_necklace() -> None:
     service = AgentService()
 

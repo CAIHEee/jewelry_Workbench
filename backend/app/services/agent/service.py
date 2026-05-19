@@ -1037,7 +1037,7 @@ class AgentService:
     ) -> dict[str, Any]:
         started = perf_counter()
         state = self._load_json(conversation.state_json) or {}
-        brief = dict(state.get("design_brief") or {})
+        brief = self._sanitize_design_brief(dict(state.get("design_brief") or {}))
         original_brief = dict(brief)
         selected_cards = list(state.get("selected_knowledge_cards") or [])
         stone_analysis = state.get("stone_analysis") if isinstance(state.get("stone_analysis"), dict) else None
@@ -1059,6 +1059,7 @@ class AgentService:
             brief["stones"] = stone_analysis
             state["design_source_assets"] = [item.model_dump(mode="json") for item in attachments[:1]]
         self._merge_design_content_into_brief(brief, content, pending_slot=pending_slot)
+        brief = self._sanitize_design_brief(brief)
         knowledge_cards = self._search_jewelry_knowledge(content=content, brief=brief, stone_analysis=stone_analysis)
         explicit_generate_intent = self._is_design_generate_intent(content)
         continue_supplement_intent = self._is_design_continue_supplement_intent(content)
@@ -1078,6 +1079,7 @@ class AgentService:
         computed_missing_slots = self._missing_design_slots(brief, stone_analysis)
         if design_plan:
             brief = self._merge_llm_design_brief(brief, design_plan.get("design_brief"))
+            brief = self._sanitize_design_brief(brief)
             brief = self._localize_design_brief(brief)
             if stone_analysis:
                 brief["stones"] = stone_analysis
@@ -1508,6 +1510,13 @@ class AgentService:
             else:
                 localized[key] = self._localize_text_value(value, field=key)
         return localized
+
+    def _sanitize_design_brief(self, brief: dict[str, Any]) -> dict[str, Any]:
+        sanitized = dict(brief)
+        for slot in ("category", "concept", "gemstone", "metal", "style", "craft", "scene", "supplement"):
+            if self._is_non_design_chitchat_value(sanitized.get(slot)):
+                sanitized.pop(slot, None)
+        return sanitized
 
     def _localize_stone_analysis(self, stone_analysis: dict[str, object] | None) -> dict[str, object] | None:
         if not isinstance(stone_analysis, dict):
@@ -2075,7 +2084,17 @@ class AgentService:
 
     def _merge_design_content_into_brief(self, brief: dict[str, Any], content: str, *, pending_slot: str = "") -> None:
         stripped = self._strip_design_generate_phrases(content.strip())
-        if not stripped or self._is_agent_autofill_intent(stripped) or self._is_design_alternative_options_intent(stripped):
+        if (
+            not stripped
+            or self._is_non_design_chitchat_value(stripped)
+            or self._is_agent_autofill_intent(stripped)
+            or self._is_design_alternative_options_intent(stripped)
+        ):
+            return
+        gemstone_update = self._extract_gemstone_attribute_update(stripped)
+        if gemstone_update:
+            current_gemstone = str(brief.get("gemstone") or "").strip()
+            brief["gemstone"] = self._merge_gemstone_attribute_update(current_gemstone, gemstone_update)
             return
         revision_intents = self._extract_design_revision_intents(stripped)
         if revision_intents["updates"] or revision_intents["clears"] or revision_intents["autofill_slots"]:
@@ -2123,6 +2142,7 @@ class AgentService:
         )
         if (
             not answered_pending_slot
+            and not self._is_short_ambiguous_design_answer(stripped)
             and lowered not in {"整理设计理念", "生成首版设计图", "优化提示词"}
             and not any(marker in stripped for marker in upload_reference_markers)
         ):
@@ -2145,6 +2165,46 @@ class AgentService:
             return "".join(dict.fromkeys(parts))
         return self._first_matching_phrase(normalized, ["祖母绿", "和田玉", "玉", "钻石", "钻", "红宝石", "红宝", "蓝宝石", "蓝宝", "珍珠", "裸石"])
 
+    def _extract_gemstone_attribute_update(self, text: str) -> dict[str, str]:
+        normalized = text.strip()
+        if not any(marker in normalized for marker in ("主石", "玉石", "翡翠", "裸石", "宝石")):
+            return {}
+        profile = self._extract_jade_profile_from_text(normalized)
+        updates = {key: value for key, value in profile.items() if value}
+        if "形制" in normalized or "形状" in normalized or "外形" in normalized:
+            shape = self._extract_jade_shape_value(normalized)
+            if shape:
+                updates["shape"] = shape
+        explicit_count = any(marker in normalized for marker in ("数量", "几颗", "几粒", "单颗", "双石", "两颗", "二颗", "三颗", "多颗"))
+        if not any(updates.get(key) for key in ("water", "color", "shape")) and not explicit_count:
+            return {}
+        return updates
+
+    def _merge_gemstone_attribute_update(self, current: str, updates: dict[str, str]) -> str:
+        profile = self._extract_jade_profile_from_text(current)
+        for key, value in updates.items():
+            if value:
+                profile[key] = value
+        parts: list[str] = []
+        for value in [profile.get("water"), profile.get("color"), profile.get("shape")]:
+            if value and value not in parts:
+                parts.append(value)
+        if not any(parts):
+            return current
+        rendered = "".join(item for item in parts if item)
+        if "翡翠" not in rendered and ("翡翠" in current or any(updates.values())):
+            rendered = f"翡翠{rendered}"
+        count = profile.get("count") or self._infer_jade_count(rendered)
+        if count and count not in rendered:
+            rendered = f"{rendered}{count}"
+        return rendered
+
+    def _extract_jade_shape_value(self, text: str) -> str:
+        explicit = re.search(r"(?:翡翠|玉石|主石|裸石|宝石)?(?:的)?(?:形制|形状|外形)\s*(?:是|为|改成|改为|调整为|定为|设为|:|：)?\s*([^，。；,;\s]+)", text)
+        if explicit:
+            return explicit.group(1).strip(" ：:，,。；;")
+        return self._extract_jade_profile_from_text(text).get("shape") or ""
+
     def _jade_shape_phrase(self, text: str, fallback: str) -> str:
         if "随形" in text and "蛋面" in text:
             return "随形蛋面"
@@ -2164,6 +2224,78 @@ class AgentService:
             }
             return style_aliases.get(stripped, stripped)
         return stripped
+
+    def _is_non_design_chitchat_value(self, value: object) -> bool:
+        if not isinstance(value, str):
+            return False
+        normalized = value.strip().lower().replace(" ", "")
+        return normalized in {
+            "你好",
+            "您好",
+            "hello",
+            "hi",
+            "哈喽",
+            "嗨",
+            "在吗",
+            "在不在",
+            "谢谢",
+            "好的",
+            "好",
+            "ok",
+            "嗯",
+            "嗯嗯",
+        }
+
+    def _is_short_ambiguous_design_answer(self, text: str) -> bool:
+        stripped = text.strip()
+        if len(stripped) > 8:
+            return False
+        if any(
+            marker in stripped
+            for marker in (
+                "戒指",
+                "吊坠",
+                "项链",
+                "耳环",
+                "耳坠",
+                "胸针",
+                "手镯",
+                "手链",
+                "18K",
+                "18k",
+                "黄金",
+                "白金",
+                "铂金",
+                "玫瑰金",
+                "翡翠",
+                "玉",
+                "钻",
+                "宝石",
+                "蛋面",
+                "水滴",
+                "三角",
+                "自然",
+                "复古",
+                "现代",
+                "中式",
+                "东方",
+                "极简",
+                "轻奢",
+                "爪镶",
+                "包镶",
+                "围钻",
+                "古法",
+                "磨砂",
+                "日常",
+                "通勤",
+                "晚宴",
+                "聚会",
+                "收藏",
+                "婚礼",
+            )
+        ):
+            return False
+        return True
 
     def _extract_explicit_design_slot_updates(self, content: str) -> dict[str, str]:
         return self._extract_design_revision_intents(content)["updates"]
@@ -2866,7 +2998,7 @@ class AgentService:
         normalized = text.replace("，", " ").replace("。", " ").replace("；", " ")
         waters = ["玻璃种", "高冰种", "冰种", "冰糯种", "糯种", "豆种", "油青种", "蓝水", "晴水", "紫罗兰", "黄翡", "红翡", "墨翠", "飘花", "白冰", "春带彩"]
         colors = ["帝王绿", "满绿", "阳绿", "苹果绿", "白冰", "飘花", "紫罗兰", "黄翡", "红翡", "墨翠", "蓝水", "晴水", "春带彩", "绿色", "翠绿"]
-        shapes = ["蛋面", "水滴", "平安扣", "无事牌", "叶子", "福豆", "福瓜", "葫芦", "马鞍戒面", "随形", "观音", "佛公"]
+        shapes = ["三角形", "三角", "圆形", "椭圆形", "方形", "长方形", "蛋面", "水滴", "平安扣", "无事牌", "叶子", "福豆", "福瓜", "葫芦", "马鞍戒面", "随形", "观音", "佛公"]
         return {
             "water": self._first_matching_phrase(normalized, waters) or "",
             "color": self._first_matching_phrase(normalized, colors) or "",
