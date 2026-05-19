@@ -37,11 +37,12 @@ const jobProgressLabels = {
 interface GrayscaleReliefPageProps {
   assetItems: AssetItem[];
   onRecordRun: (run: Omit<WorkspaceRun, "id" | "createdAt">) => void;
+  onRefreshAssets?: () => Promise<void> | void;
   pageRuns: ModuleHistoryEntry[];
   onDeleteHistory?: (historyId: string) => Promise<void> | void;
 }
 
-export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDeleteHistory }: GrayscaleReliefPageProps) {
+export function GrayscaleReliefPage({ assetItems, onRecordRun, onRefreshAssets, pageRuns, onDeleteHistory }: GrayscaleReliefPageProps) {
   const { models, error: modelError, defaultModelId } = useModelCatalog((model) => model.supports_reference_images);
   const grayscaleDefaultModelId = useMemo(
     () => models.find((item) => item.id === preferredGrayscaleModelId)?.id ?? defaultModelId,
@@ -167,6 +168,10 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
       });
       setJobProgress({ percent: 100, label: "已完成" });
       setProgressState("success");
+      await onRefreshAssets?.();
+      window.setTimeout(() => {
+        void onRefreshAssets?.();
+      }, 800);
     } catch (submitError) {
       setLoading(false);
       setPendingHistoryId(null);
@@ -207,6 +212,7 @@ export function GrayscaleReliefPage({ assetItems, onRecordRun, pageRuns, onDelet
               uploadLabel="上传参考图"
               onUploadFilesChange={setFiles}
               onSelectedAssetsChange={setSelectedAssets}
+              onRefreshAssets={onRefreshAssets}
             />
 
             <button className="primary-button align-start" type="button" onClick={handleGenerate} disabled={loading || !selectedModel}>

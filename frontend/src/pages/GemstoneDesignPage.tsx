@@ -14,6 +14,7 @@ const preferredGemstoneDesignModelId = "gemini-3.1-flash-image-preview";
 interface GemstoneDesignPageProps {
   assetItems: AssetItem[];
   onRecordRun: (run: Omit<WorkspaceRun, "id" | "createdAt">) => void;
+  onRefreshAssets?: () => Promise<void> | void;
   pageRuns: ModuleHistoryEntry[];
   onDeleteHistory?: (historyId: string) => Promise<void> | void;
 }

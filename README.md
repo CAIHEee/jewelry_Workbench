@@ -654,6 +654,7 @@ npm run dev
 - `python -m uvicorn app.main:app ...` 或 `python -m gunicorn ...` 是后端 API 服务，必须启动，否则登录和所有 `/api` 接口都不可用。
 - `python -m app.worker` 是队列消费者，只执行 Redis 里的任务，不能单独作为后端服务使用。
 - 当前这台机器推荐并发配置：`2 web worker + 2 queue worker`。
+- Docker/离线包部署默认会读取 `WORKER_CONCURRENCY=2`，也就是在 `worker` 容器内启动 `2` 个队列 Worker 进程；要继续提高队列执行并发，先调整 `.env.docker` 里的 `WORKER_CONCURRENCY`。
 - 旧同步生图接口仍保留，可用于回滚和对比。
 - 新任务接口会立即返回 `job_id`，再通过 `GET /api/v1/ai/jobs/{job_id}` 查询 `queued`、`running`、`uploading`、`succeeded`、`failed`。
 - 普通用户默认最多同时 1 个任务，root 默认最多 3 个任务，可通过 `QUEUE_USER_MAX_ACTIVE_JOBS` 和 `QUEUE_ROOT_MAX_ACTIVE_JOBS` 调整。

@@ -16,6 +16,7 @@ import type { ModuleHistoryEntry } from "../utils/history";
 interface MultiViewSplitPageProps {
   assetItems: AssetItem[];
   onRecordRun?: (run: Omit<WorkspaceRun, "id" | "createdAt">) => void;
+  onRefreshAssets?: () => Promise<void> | void;
   pageRuns: ModuleHistoryEntry[];
   onDeleteHistory?: (historyId: string) => Promise<void> | void;
 }
@@ -52,7 +53,7 @@ function buildSplitDownloadName(item: MultiViewSplitItem | null) {
   return buildDownloadFilename(`multi-view-${item.view}`, item.image_url);
 }
 
-export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDeleteHistory }: MultiViewSplitPageProps) {
+export function MultiViewSplitPage({ assetItems, onRecordRun, onRefreshAssets, pageRuns, onDeleteHistory }: MultiViewSplitPageProps) {
   const [files, setFiles] = useState<File[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<AssetItem[]>([]);
   const [localSourcePreviewUrl, setLocalSourcePreviewUrl] = useState<string | null>(null);
@@ -250,6 +251,10 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
         })),
         prompt: "Split four-grid multi-view image into separate view assets.",
       });
+      await onRefreshAssets?.();
+      window.setTimeout(() => {
+        void onRefreshAssets?.();
+      }, 800);
     } catch (splitError) {
       setLoading(false);
       setPendingHistoryId(null);
@@ -284,6 +289,7 @@ export function MultiViewSplitPage({ assetItems, onRecordRun, pageRuns, onDelete
               uploadLabel="上传图片"
               onUploadFilesChange={handleUploadFilesChange}
               onSelectedAssetsChange={handleSelectedAssetsChange}
+              onRefreshAssets={onRefreshAssets}
             />
 
             <details className="drawer-panel inner-drawer">

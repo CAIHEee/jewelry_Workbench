@@ -19,6 +19,7 @@ interface MultiViewPageProps {
   assetItems: AssetItem[];
   onRecordRun: (run: Omit<WorkspaceRun, "id" | "createdAt">) => void;
   onRefreshHistory?: () => Promise<void> | void;
+  onRefreshAssets?: () => Promise<void> | void;
   pageRuns: ModuleHistoryEntry[];
   onDeleteHistory?: (historyId: string) => Promise<void> | void;
 }
@@ -49,7 +50,7 @@ const jobProgressLabels = {
   failed: "多视图生成失败",
 };
 
-export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefreshHistory, pageRuns, onDeleteHistory }: MultiViewPageProps) {
+export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefreshHistory, onRefreshAssets, pageRuns, onDeleteHistory }: MultiViewPageProps) {
   const { models, error: modelError, defaultModelId } = useModelCatalog((model) => allowedMultiViewModelIds.has(model.id));
   const multiViewDefaultModelId = useMemo(
     () => models.find((item) => item.id === preferredMultiViewModelId)?.id ?? defaultModelId,
@@ -194,9 +195,10 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
       setSelectedHistoryId(null);
       setJobProgress({ percent: 100, label: generationCount > 1 ? `已完成 ${validResponses.length}/${generationCount} 张` : "已完成" });
       setProgressState("success");
-      await onRefreshHistory?.();
+      await Promise.all([onRefreshHistory?.(), onRefreshAssets?.()]);
       window.setTimeout(() => {
         void onRefreshHistory?.();
+        void onRefreshAssets?.();
       }, 800);
       if (validResponses.length < generationCount) {
         setError(`已完成 ${validResponses.length}/${generationCount} 张，${generationCount - validResponses.length} 张生成失败或超时。`);
@@ -242,6 +244,7 @@ export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
               uploadLabel="上传原图"
               onUploadFilesChange={setFiles}
               onSelectedAssetsChange={setSelectedAssets}
+              onRefreshAssets={onRefreshAssets}
             />
 
             <label className="input-group compact-input-group prompt-input-group">

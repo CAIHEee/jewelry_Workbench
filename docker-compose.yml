@@ -3,7 +3,7 @@ name: jinma_jewelry_system
 services:
   mysql:
     image: mysql:8.4
-    restart: unless-stopped
+    restart: "no"
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
@@ -21,7 +21,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    restart: unless-stopped
+    restart: "no"
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis_data:/data
@@ -33,7 +33,7 @@ services:
 
   backend:
     image: ${BACKEND_IMAGE}
-    restart: unless-stopped
+    restart: "no"
     environment:
       APP_ENV: production
       APP_DEBUG: "false"
@@ -52,6 +52,12 @@ services:
       CLOSEAI_API_KEY: ${CLOSEAI_API_KEY:-}
       CLOSEAI_BASE_URL: ${CLOSEAI_BASE_URL:-https://api.openai-proxy.org/v1}
       CLOSEAI_TIMEOUT_SECONDS: ${CLOSEAI_TIMEOUT_SECONDS:-1200}
+      AGENT_LLM_BASE_URL: ${AGENT_LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode}
+      AGENT_LLM_API_KEY: ${AGENT_LLM_API_KEY:-}
+      AGENT_LLM_TIMEOUT_SECONDS: ${AGENT_LLM_TIMEOUT_SECONDS:-60}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      MULTI_VIEW_PROMPT_MODEL: ${MULTI_VIEW_PROMPT_MODEL:-qwen3-vl-plus}
+      MULTI_VIEW_PROMPT_THINKING_BUDGET: ${MULTI_VIEW_PROMPT_THINKING_BUDGET:-81920}
       DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
@@ -98,7 +104,7 @@ services:
 
   worker:
     image: ${BACKEND_IMAGE}
-    restart: unless-stopped
+    restart: "no"
     environment:
       APP_ENV: production
       APP_DEBUG: "false"
@@ -117,6 +123,12 @@ services:
       CLOSEAI_API_KEY: ${CLOSEAI_API_KEY:-}
       CLOSEAI_BASE_URL: ${CLOSEAI_BASE_URL:-https://api.openai-proxy.org/v1}
       CLOSEAI_TIMEOUT_SECONDS: ${CLOSEAI_TIMEOUT_SECONDS:-1200}
+      AGENT_LLM_BASE_URL: ${AGENT_LLM_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode}
+      AGENT_LLM_API_KEY: ${AGENT_LLM_API_KEY:-}
+      AGENT_LLM_TIMEOUT_SECONDS: ${AGENT_LLM_TIMEOUT_SECONDS:-60}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      MULTI_VIEW_PROMPT_MODEL: ${MULTI_VIEW_PROMPT_MODEL:-qwen3-vl-plus}
+      MULTI_VIEW_PROMPT_THINKING_BUDGET: ${MULTI_VIEW_PROMPT_THINKING_BUDGET:-81920}
       DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
@@ -129,6 +141,7 @@ services:
       ROOT_DISPLAY_NAME: ${ROOT_DISPLAY_NAME:-系统管理员}
       ROOT_EMAIL: ${ROOT_EMAIL:-root@example.com}
       ROOT_DEFAULT_PASSWORD: ${ROOT_DEFAULT_PASSWORD:-root123456}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
       QUEUE_REDIS_URL: redis://redis:6379/0
       QUEUE_NAME: ${QUEUE_NAME:-jinma-ai}
       QUEUE_JOB_TIMEOUT_SECONDS: ${QUEUE_JOB_TIMEOUT_SECONDS:-1500}
@@ -146,7 +159,11 @@ services:
       - |
         python /app/deploy/docker/wait_for_tcp.py mysql 3306 60 &&
         python /app/deploy/docker/wait_for_tcp.py redis 6379 60 &&
-        python -m app.worker
+        for i in $$(seq 1 $${WORKER_CONCURRENCY:-2}); do
+          echo "Starting queue worker $$i/$${WORKER_CONCURRENCY:-2}"
+          python -m app.worker &
+        done
+        wait
     depends_on:
       mysql:
         condition: service_healthy
@@ -157,7 +174,7 @@ services:
 
   agent:
     image: ${BACKEND_IMAGE}
-    restart: unless-stopped
+    restart: "no"
     environment:
       APP_ENV: production
       APP_DEBUG: "false"
@@ -185,6 +202,9 @@ services:
       CLOSEAI_API_KEY: ${CLOSEAI_API_KEY:-}
       CLOSEAI_BASE_URL: ${CLOSEAI_BASE_URL:-https://api.openai-proxy.org/v1}
       CLOSEAI_TIMEOUT_SECONDS: ${CLOSEAI_TIMEOUT_SECONDS:-1200}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      MULTI_VIEW_PROMPT_MODEL: ${MULTI_VIEW_PROMPT_MODEL:-qwen3-vl-plus}
+      MULTI_VIEW_PROMPT_THINKING_BUDGET: ${MULTI_VIEW_PROMPT_THINKING_BUDGET:-81920}
       DATABASE_URL: mysql+pymysql://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
@@ -230,7 +250,7 @@ services:
 
   nginx:
     image: ${NGINX_IMAGE}
-    restart: unless-stopped
+    restart: "no"
     depends_on:
       backend:
         condition: service_healthy

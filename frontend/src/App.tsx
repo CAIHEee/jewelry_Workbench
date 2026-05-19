@@ -334,6 +334,13 @@ export default function App() {
   }, [activeView, currentUser]);
 
   useEffect(() => {
+    if (!currentUser) return;
+    if (["multi-view", "multi-view-split", "image-edit", "product-refine", "gemstone-design", "upscale", "fusion", "grayscale-relief", "ai-agent", "asset-management"].includes(activeView)) {
+      void refreshPersistedAssets();
+    }
+  }, [activeView, currentUser]);
+
+  useEffect(() => {
     if (isMobile) {
       setSidebarCollapsed(false);
       return;
@@ -609,31 +616,31 @@ export default function App() {
           <TextToImagePage onRecordRun={recordWorkspaceRun} pageRuns={textToImageRuns} onDeleteHistory={handleDeleteHistory} />
         </section>
         <section className={activeView === "multi-view" ? "view-panel active" : "view-panel hidden"}>
-          <MultiViewPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} onRefreshHistory={refreshPersistedHistory} pageRuns={multiViewRuns} onDeleteHistory={handleDeleteHistory} />
+          <MultiViewPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} onRefreshHistory={refreshPersistedHistory} onRefreshAssets={refreshPersistedAssets} pageRuns={multiViewRuns} onDeleteHistory={handleDeleteHistory} />
         </section>
         <section className={activeView === "multi-view-split" ? "view-panel active" : "view-panel hidden"}>
-          <MultiViewSplitPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} pageRuns={multiViewSplitRuns} onDeleteHistory={handleDeleteHistory} />
+          <MultiViewSplitPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} onRefreshAssets={refreshPersistedAssets} pageRuns={multiViewSplitRuns} onDeleteHistory={handleDeleteHistory} />
         </section>
         <section className={activeView === "image-edit" ? "view-panel active" : "view-panel hidden"}>
-          <ImageEditPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} onRefreshHistory={refreshPersistedHistory} pageRuns={imageEditRuns} onDeleteHistory={handleDeleteHistory} />
+          <ImageEditPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} onRefreshHistory={refreshPersistedHistory} onRefreshAssets={refreshPersistedAssets} pageRuns={imageEditRuns} onDeleteHistory={handleDeleteHistory} />
         </section>
         <section className={activeView === "product-refine" ? "view-panel active" : "view-panel hidden"}>
-          <ProductRefinePage assetItems={assetItems} onRecordRun={recordWorkspaceRun} pageRuns={productRefineRuns} onDeleteHistory={handleDeleteHistory} />
+          <ProductRefinePage assetItems={assetItems} onRecordRun={recordWorkspaceRun} onRefreshAssets={refreshPersistedAssets} pageRuns={productRefineRuns} onDeleteHistory={handleDeleteHistory} />
         </section>
         <section className={activeView === "gemstone-design" ? "view-panel active" : "view-panel hidden"}>
-          <GemstoneDesignPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} pageRuns={gemstoneDesignRuns} onDeleteHistory={handleDeleteHistory} />
+          <GemstoneDesignPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} onRefreshAssets={refreshPersistedAssets} pageRuns={gemstoneDesignRuns} onDeleteHistory={handleDeleteHistory} />
         </section>
         <section className={activeView === "upscale" ? "view-panel active" : "view-panel hidden"}>
-          <UpscaleEnhancePage assetItems={assetItems} onRecordRun={recordWorkspaceRun} pageRuns={upscaleRuns} onDeleteHistory={handleDeleteHistory} />
+          <UpscaleEnhancePage assetItems={assetItems} onRecordRun={recordWorkspaceRun} onRefreshAssets={refreshPersistedAssets} pageRuns={upscaleRuns} onDeleteHistory={handleDeleteHistory} />
         </section>
         <section className={activeView === "grayscale-relief" ? "view-panel active" : "view-panel hidden"}>
-          <GrayscaleReliefPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} pageRuns={grayscaleRuns} onDeleteHistory={handleDeleteHistory} />
+          <GrayscaleReliefPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} onRefreshAssets={refreshPersistedAssets} pageRuns={grayscaleRuns} onDeleteHistory={handleDeleteHistory} />
         </section>
         <section className={activeView === "ai-agent" ? "view-panel active" : "view-panel hidden"}>
-          <AgentPage assetItems={assetItems} />
+          <AgentPage assetItems={assetItems} onRefreshAssets={refreshPersistedAssets} />
         </section>
         <section className={activeView === "fusion" ? "view-panel active" : "view-panel hidden"}>
-          <FusionStudio onRecordRun={recordWorkspaceRun} assetItems={assetItems} pageRuns={fusionRuns} onDeleteHistory={handleDeleteHistory} />
+          <FusionStudio onRecordRun={recordWorkspaceRun} assetItems={assetItems} onRefreshAssets={refreshPersistedAssets} pageRuns={fusionRuns} onDeleteHistory={handleDeleteHistory} />
         </section>
         <section className={activeView === "history" ? "view-panel active" : "view-panel hidden"}>
           <HistoryPage

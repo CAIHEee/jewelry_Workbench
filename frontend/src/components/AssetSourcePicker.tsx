@@ -13,6 +13,7 @@ interface AssetSourcePickerProps {
   enableRecommendedAsset?: boolean;
   onUploadFilesChange?: (files: File[]) => void;
   onSelectedAssetsChange?: (assets: AssetItem[]) => void;
+  onRefreshAssets?: () => Promise<void> | void;
 }
 
 export function AssetSourcePicker({
@@ -26,8 +27,11 @@ export function AssetSourcePicker({
   enableRecommendedAsset = true,
   onUploadFilesChange,
   onSelectedAssetsChange,
+  onRefreshAssets,
 }: AssetSourcePickerProps) {
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [assetRefreshError, setAssetRefreshError] = useState<string | null>(null);
+  const [assetRefreshing, setAssetRefreshing] = useState(false);
   const [sourceType, setSourceType] = useState<"asset" | "upload">("asset");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
@@ -39,6 +43,7 @@ export function AssetSourcePicker({
   const [recommendedHidden, setRecommendedHidden] = useState(false);
   const uploadFilesChangeRef = useRef(onUploadFilesChange);
   const selectedAssetsChangeRef = useRef(onSelectedAssetsChange);
+  const refreshAssetsRef = useRef(onRefreshAssets);
 
   useEffect(() => {
     uploadFilesChangeRef.current = onUploadFilesChange;
@@ -47,6 +52,10 @@ export function AssetSourcePicker({
   useEffect(() => {
     selectedAssetsChangeRef.current = onSelectedAssetsChange;
   }, [onSelectedAssetsChange]);
+
+  useEffect(() => {
+    refreshAssetsRef.current = onRefreshAssets;
+  }, [onRefreshAssets]);
 
   const selectedAssets = useMemo(() => assetItems.filter((item) => selectedIds.includes(item.id)), [assetItems, selectedIds]);
   const personalAssetItems = useMemo(
@@ -165,6 +174,28 @@ export function AssetSourcePicker({
     }
 
     setSelectedIds((current) => (current.includes(assetId) ? current.filter((id) => id !== assetId) : [...current, assetId]));
+  }
+
+  async function refreshAssetsForModal() {
+    if (!refreshAssetsRef.current) {
+      return;
+    }
+
+    setAssetRefreshing(true);
+    setAssetRefreshError(null);
+    try {
+      await refreshAssetsRef.current();
+    } catch (error) {
+      setAssetRefreshError(error instanceof Error ? error.message : "刷新资产失败");
+    } finally {
+      setAssetRefreshing(false);
+    }
+  }
+
+  function openAssetModal() {
+    setSourceType("asset");
+    setAssetModalOpen(true);
+    void refreshAssetsForModal();
   }
 
   function removeSelectedAsset(assetId: string) {
@@ -318,8 +349,7 @@ export function AssetSourcePicker({
               上传图片
             </label>
             <button className="source-picker-compact-item" type="button" onClick={() => {
-              setSourceType("asset");
-              setAssetModalOpen(true);
+              openAssetModal();
               setCompactMenuOpen(false);
             }}>
               <span className="source-picker-compact-assets-icon" aria-hidden="true" />
@@ -352,8 +382,9 @@ export function AssetSourcePicker({
                     <span>{communityAssetItems.length}</span>
                   </button>
                 </div>
-                <div className="hint-box template-hint-box">{allowMultiple ? "当前支持多选" : "当前支持单选"}</div>
+                <div className="hint-box template-hint-box">{assetRefreshing ? "正在同步最新资产..." : allowMultiple ? "当前支持多选" : "当前支持单选"}</div>
               </div>
+              {assetRefreshError ? <p className="error-text asset-modal-refresh-error">{assetRefreshError}</p> : null}
 
               <div className="asset-modal-body">
                 {visibleAssetItems.length > 0 ? (
@@ -476,10 +507,7 @@ export function AssetSourcePicker({
             <button
               className="source-picker-tool-button"
               type="button"
-              onClick={() => {
-                setSourceType("asset");
-                setAssetModalOpen(true);
-              }}
+              onClick={openAssetModal}
             >
               <span className="source-picker-compact-assets-icon" aria-hidden="true" />
               <span className="source-picker-tool-copy">
@@ -539,7 +567,11 @@ export function AssetSourcePicker({
                   >
                     ×
                   </button>
-                  <div className="source-preview-art" style={{ background: item.preview }} />
+                  {item.previewUrl ?? item.storageUrl ? (
+                    <img className="source-preview-art" src={item.previewUrl ?? item.storageUrl ?? ""} alt={item.name} />
+                  ) : (
+                    <div className="source-preview-art" style={{ background: item.preview }} />
+                  )}
                   <p>{item.name}</p>
                 </article>
               ))}
@@ -578,8 +610,9 @@ export function AssetSourcePicker({
                     <span>{communityAssetItems.length}</span>
                   </button>
                 </div>
-                <div className="hint-box template-hint-box">{allowMultiple ? "当前支持多选" : "当前支持单选"}</div>
+                <div className="hint-box template-hint-box">{assetRefreshing ? "正在同步最新资产..." : allowMultiple ? "当前支持多选" : "当前支持单选"}</div>
               </div>
+              {assetRefreshError ? <p className="error-text asset-modal-refresh-error">{assetRefreshError}</p> : null}
 
               <div className="asset-modal-body">
                 {visibleAssetItems.length > 0 ? (

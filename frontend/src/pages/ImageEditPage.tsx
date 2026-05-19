@@ -40,11 +40,12 @@ interface ImageEditPageProps {
   assetItems: AssetItem[];
   onRecordRun: (run: Omit<WorkspaceRun, "id" | "createdAt">) => void;
   onRefreshHistory?: () => Promise<void> | void;
+  onRefreshAssets?: () => Promise<void> | void;
   pageRuns: ModuleHistoryEntry[];
   onDeleteHistory?: (historyId: string) => Promise<void> | void;
 }
 
-export function ImageEditPage({ assetItems, onRecordRun: _onRecordRun, onRefreshHistory, pageRuns, onDeleteHistory }: ImageEditPageProps) {
+export function ImageEditPage({ assetItems, onRecordRun: _onRecordRun, onRefreshHistory, onRefreshAssets, pageRuns, onDeleteHistory }: ImageEditPageProps) {
   const { models, error: modelError, defaultModelId } = useModelCatalog((model) => model.supports_reference_images);
   const imageEditDefaultModelId = useMemo(
     () => models.find((item) => item.id === preferredImageEditModelId)?.id ?? defaultModelId,
@@ -176,9 +177,10 @@ export function ImageEditPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
       setSelectedHistoryId(null);
       setJobProgress({ percent: 100, label: generationCount > 1 ? `已完成 ${validResponses.length}/${generationCount} 张` : "已完成" });
       setProgressState("success");
-      await onRefreshHistory?.();
+      await Promise.all([onRefreshHistory?.(), onRefreshAssets?.()]);
       window.setTimeout(() => {
         void onRefreshHistory?.();
+        void onRefreshAssets?.();
       }, 800);
       if (validResponses.length < generationCount) {
         setError(`已完成 ${validResponses.length}/${generationCount} 张，${generationCount - validResponses.length} 张生成失败或超时。`);
@@ -224,6 +226,7 @@ export function ImageEditPage({ assetItems, onRecordRun: _onRecordRun, onRefresh
               enableRecommendedAsset={false}
               onUploadFilesChange={setFiles}
               onSelectedAssetsChange={setSelectedAssets}
+              onRefreshAssets={onRefreshAssets}
             />
 
             <div className="input-group compact-input-group count-input-row">

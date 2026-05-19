@@ -28,7 +28,7 @@ chmod +x start_offline_stack.sh
 - 启动 `mysql`
 - 启动 `redis`
 - 启动 `backend`
-- 启动 `worker`
+- 启动 `worker`，默认按 `.env.docker` 里的 `WORKER_CONCURRENCY=2` 开启 2 个队列 Worker 进程
 - 启动 `nginx`
 
 ## 查看状态

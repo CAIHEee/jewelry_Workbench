@@ -23,6 +23,7 @@ import type { GenerationProgressPhase } from "./GenerationProgress";
 interface ReferenceTransformModulePageProps {
   assetItems: AssetItem[];
   onRecordRun: (run: Omit<WorkspaceRun, "id" | "createdAt">) => void;
+  onRefreshAssets?: () => Promise<void> | void;
   pageRuns: ModuleHistoryEntry[];
   onDeleteHistory?: (historyId: string) => Promise<void> | void;
   pageTitle: string;
@@ -56,6 +57,7 @@ interface ReferenceTransformModulePageProps {
 export function ReferenceTransformModulePage({
   assetItems,
   onRecordRun,
+  onRefreshAssets,
   pageRuns,
   onDeleteHistory,
   pageTitle,
@@ -260,6 +262,10 @@ export function ReferenceTransformModulePage({
       });
       setJobProgress({ percent: 100, label: "已完成" });
       setProgressState("success");
+      await onRefreshAssets?.();
+      window.setTimeout(() => {
+        void onRefreshAssets?.();
+      }, 800);
     } catch (submitError) {
       setLoading(false);
       setPendingHistoryId(null);
@@ -323,6 +329,7 @@ export function ReferenceTransformModulePage({
               uploadLabel={uploadLabel}
               onUploadFilesChange={setFiles}
               onSelectedAssetsChange={setSelectedAssets}
+              onRefreshAssets={onRefreshAssets}
             />
 
             {enableLocalMarkup ? (

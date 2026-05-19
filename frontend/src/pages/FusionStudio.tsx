@@ -42,11 +42,12 @@ const jobProgressLabels = {
 interface FusionStudioProps {
   onRecordRun: (run: Omit<WorkspaceRun, "id" | "createdAt">) => void;
   assetItems: AssetItem[];
+  onRefreshAssets?: () => Promise<void> | void;
   pageRuns: ModuleHistoryEntry[];
   onDeleteHistory?: (historyId: string) => Promise<void> | void;
 }
 
-export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistory }: FusionStudioProps) {
+export function FusionStudio({ onRecordRun, assetItems, onRefreshAssets, pageRuns, onDeleteHistory }: FusionStudioProps) {
   const { models, error: modelError, defaultModelId } = useModelCatalog((item) => item.supports_multi_image_fusion);
   const [files, setFiles] = useState<File[]>([]);
   const [selectedAssets, setSelectedAssets] = useState<AssetItem[]>([]);
@@ -201,6 +202,10 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
       });
       setJobProgress({ percent: 100, label: "已完成" });
       setProgressState("success");
+      await onRefreshAssets?.();
+      window.setTimeout(() => {
+        void onRefreshAssets?.();
+      }, 800);
     } catch (submitError) {
       setIsSubmitting(false);
       setPendingHistoryId(null);
@@ -252,6 +257,7 @@ export function FusionStudio({ onRecordRun, assetItems, pageRuns, onDeleteHistor
                   setPrimaryImageIndex(0);
                 }
               }}
+              onRefreshAssets={onRefreshAssets}
             />
 
             {selectedInputItems.length > 0 ? (

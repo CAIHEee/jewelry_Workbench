@@ -1059,6 +1059,7 @@ select {
 }
 
 .source-picker-card {
+  position: relative;
   padding: 10px;
   border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.08);

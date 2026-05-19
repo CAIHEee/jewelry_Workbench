@@ -39,6 +39,7 @@ import { buildGenerationJobProgress } from "../utils/jobProgress";
 
 interface AgentPageProps {
   assetItems: AssetItem[];
+  onRefreshAssets?: () => Promise<void> | void;
 }
 
 interface AgentFlowOption {
@@ -379,7 +380,7 @@ function DownloadIcon() {
   );
 }
 
-export function AgentPage({ assetItems }: AgentPageProps) {
+export function AgentPage({ assetItems, onRefreshAssets }: AgentPageProps) {
   const [mode, setMode] = useState<AgentMode>("workflow");
   const [conversations, setConversations] = useState<AgentConversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
@@ -1655,6 +1656,7 @@ export function AgentPage({ assetItems }: AgentPageProps) {
                     compactTrigger
                     onUploadFilesChange={setFiles}
                     onSelectedAssetsChange={setSelectedAssetItems}
+                    onRefreshAssets={onRefreshAssets}
                   />
                 </div>
                 <div className="agent-send-row">
