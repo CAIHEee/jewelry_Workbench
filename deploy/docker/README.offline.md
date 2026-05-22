@@ -137,10 +137,10 @@ chmod +x backup_offline_stack.sh
 ./backup_offline_stack.sh
 ```
 
-默认会在离线包同级目录下生成：
+默认会在离线包目录的同级目录下生成：
 
-- `dist/offline_backup/jinma.sql`
-- `dist/offline_backup/backend_data.tar.gz`
+- `offline_backup/jinma.sql`
+- `offline_backup/backend_data.tar.gz`
 
 恢复数据库和本地图片：
 
@@ -153,3 +153,5 @@ chmod +x restore_offline_stack.sh
 
 - `jinma.sql`
 - `backend_data.tar.gz`
+
+如果你的离线包目录不在 `dist/offline_bundle`，而是已经整包拷贝到别的机器，脚本会优先读取脚本所在目录下的 `.env.docker` 和 `docker-compose.yml`。

@@ -521,7 +521,7 @@ chmod +x deploy/docker/backup_offline_stack.sh
 deploy/docker/backup_offline_stack.sh
 ```
 
-默认会在 `dist/offline_backup` 下生成：
+默认会在离线包目录旁生成 `offline_backup`：
 
 - `jinma.sql`
 - `backend_data.tar.gz`
@@ -539,12 +539,7 @@ chmod +x deploy/docker/restore_offline_stack.sh
 deploy/docker/restore_offline_stack.sh
 ```
 
-默认会从：
-
-- `dist/offline_backup`
-- `dist/offline_bundle`
-
-读取备份和离线包。
+默认会从脚本所在目录读取 `.env.docker` 和 `docker-compose.yml`；如果脚本不在离线包目录里，则回退到仓库里的 `dist/offline_bundle`。
 
 如果你要手动指定目录：
 
