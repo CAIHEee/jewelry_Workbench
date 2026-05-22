@@ -31,6 +31,7 @@ export interface AssetItem {
   id: string;
   name: string;
   category: string;
+  moduleKind?: string | null;
   source: string;
   updatedAt: string;
   sortAt?: string;

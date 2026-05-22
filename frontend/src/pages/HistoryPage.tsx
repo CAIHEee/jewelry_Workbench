@@ -11,8 +11,16 @@ interface HistoryPageProps {
   workspaceRuns: WorkspaceRun[];
   persistedItems: PersistedHistoryItem[];
   persistedError: string | null;
+  persistedHistoryPage?: number;
+  persistedHistoryPageSize?: number;
+  persistedHistoryTotal?: number;
+  persistedHistoryKind?: string | null;
+  persistedHistoryKeyword?: string;
   onRefresh?: () => Promise<void> | void;
   onDeleteHistory?: (historyId: string) => Promise<void> | void;
+  onPageChange?: (page: number) => Promise<void> | void;
+  onPageSizeChange?: (pageSize: number) => Promise<void> | void;
+  onFilterChange?: (kind: string | null, keyword: string) => Promise<void> | void;
 }
 
 interface PreviewState {
@@ -25,13 +33,47 @@ interface PreviewState {
 
 const filterTags = ["全部", "文生图", "多图融合", "线稿转写实图", "产品精修", "裸石设计", "高清放大", "生成多视图", "多视图切图", "转灰度图"];
 
-export function HistoryPage({ workspaceRuns, persistedItems, persistedError, onRefresh, onDeleteHistory }: HistoryPageProps) {
-  const [keyword, setKeyword] = useState("");
-  const [activeFilter, setActiveFilter] = useState("全部");
+const historyFilterKindMap: Record<string, string | null> = {
+  全部: null,
+  文生图: "text_to_image",
+  多图融合: "fusion",
+  线稿转写实图: "sketch_to_realistic",
+  产品精修: "product_refine",
+  裸石设计: "gemstone_design",
+  高清放大: "upscale",
+  生成多视图: "multi_view",
+  多视图切图: "multi_view_split",
+  转灰度图: "grayscale_relief",
+};
+
+function kindToHistoryFilterLabel(kind: string | null | undefined) {
+  if (!kind) return "全部";
+  const entry = Object.entries(historyFilterKindMap).find(([, value]) => value === kind);
+  return entry?.[0] ?? "全部";
+}
+
+export function HistoryPage({
+  workspaceRuns,
+  persistedItems,
+  persistedError,
+  persistedHistoryPage = 1,
+  persistedHistoryPageSize = 12,
+  persistedHistoryTotal = persistedItems.length,
+  persistedHistoryKind = null,
+  persistedHistoryKeyword = "",
+  onRefresh,
+  onDeleteHistory,
+  onPageChange,
+  onPageSizeChange,
+  onFilterChange,
+}: HistoryPageProps) {
+  const [keyword, setKeyword] = useState(persistedHistoryKeyword);
+  const [activeFilter, setActiveFilter] = useState(kindToHistoryFilterLabel(persistedHistoryKind));
   const [previewState, setPreviewState] = useState<PreviewState | null>(null);
   const [pendingDeleteItem, setPendingDeleteItem] = useState<ModuleHistoryEntry | null>(null);
   const [deletingHistoryId, setDeletingHistoryId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [changingPage, setChangingPage] = useState(false);
   const [expandedPromptIds, setExpandedPromptIds] = useState<string[]>([]);
   const [collapsedHistoryIds, setCollapsedHistoryIds] = useState<string[]>([]);
   const [toast, setToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
@@ -57,15 +99,22 @@ export function HistoryPage({ workspaceRuns, persistedItems, persistedError, onR
         ...mergeModuleHistory(persistedItems, workspaceRuns, "multi_view_split"),
         ...mergeModuleHistory(persistedItems, workspaceRuns, "grayscale_relief"),
       ]
-        .filter((item) => {
-          const moduleLabel = getHistoryKindLabel(item.kind);
-          const filterMatched = activeFilter === "全部" || moduleLabel === activeFilter;
-          const searchable = `${item.title} ${item.model} ${item.provider} ${item.prompt}`.toLowerCase();
-          return filterMatched && (!normalizedKeyword || searchable.includes(normalizedKeyword));
-        })
         .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt)),
-    [activeFilter, normalizedKeyword, persistedItems, workspaceRuns],
+    [persistedItems, workspaceRuns],
   );
+  const displayOperationItems = useMemo(
+    () =>
+      operationItems.filter((item) => {
+        const moduleLabel = getHistoryKindLabel(item.kind);
+        const filterMatched = activeFilter === "全部" || moduleLabel === activeFilter;
+        const searchable = `${item.title} ${item.model} ${item.provider} ${item.prompt}`.toLowerCase();
+        return filterMatched && (!normalizedKeyword || searchable.includes(normalizedKeyword));
+      }),
+    [activeFilter, normalizedKeyword, operationItems],
+  );
+  const totalPages = Math.max(1, Math.ceil(persistedHistoryTotal / persistedHistoryPageSize));
+  const pageStart = persistedHistoryTotal === 0 ? 0 : (persistedHistoryPage - 1) * persistedHistoryPageSize + 1;
+  const pageEnd = Math.min(persistedHistoryTotal, persistedHistoryPage * persistedHistoryPageSize);
 
   function openOperationPreview(item: ModuleHistoryEntry) {
     setPreviewState({
@@ -108,6 +157,39 @@ export function HistoryPage({ workspaceRuns, persistedItems, persistedError, onR
     }
   }
 
+  async function handleFilterChange(nextFilter: string) {
+    setActiveFilter(nextFilter);
+    if (!onFilterChange) return;
+    await onFilterChange(historyFilterKindMap[nextFilter] ?? null, keyword);
+  }
+
+  async function handleKeywordChange(nextKeyword: string) {
+    setKeyword(nextKeyword);
+    if (!onFilterChange) return;
+    await onFilterChange(historyFilterKindMap[activeFilter] ?? null, nextKeyword);
+  }
+
+  async function handlePageChange(nextPage: number) {
+    if (!onPageChange || changingPage) return;
+    const normalizedPage = Math.min(Math.max(nextPage, 1), totalPages);
+    setChangingPage(true);
+    try {
+      await onPageChange(normalizedPage);
+    } finally {
+      setChangingPage(false);
+    }
+  }
+
+  async function handlePageSizeChange(nextPageSize: number) {
+    if (!onPageSizeChange || changingPage) return;
+    setChangingPage(true);
+    try {
+      await onPageSizeChange(nextPageSize);
+    } finally {
+      setChangingPage(false);
+    }
+  }
+
   function resolveHistoryDownloadName(item: ModuleHistoryEntry): string {
     return appendSecondSuffixToName(item.title, item.createdAt);
   }
@@ -131,7 +213,7 @@ export function HistoryPage({ workspaceRuns, persistedItems, persistedError, onR
                   className={tag === activeFilter ? "filter-chip active" : "filter-chip"}
                   type="button"
                   key={tag}
-                  onClick={() => setActiveFilter(tag)}
+                  onClick={() => void handleFilterChange(tag)}
                 >
                   {tag}
                 </button>
@@ -141,7 +223,7 @@ export function HistoryPage({ workspaceRuns, persistedItems, persistedError, onR
               className="search-input"
               placeholder="按任务名、模型或提示词搜索..."
               value={keyword}
-              onChange={(event) => setKeyword(event.target.value)}
+              onChange={(event) => void handleKeywordChange(event.target.value)}
             />
           </div>
         </div>
@@ -154,7 +236,7 @@ export function HistoryPage({ workspaceRuns, persistedItems, persistedError, onR
             <p className="section-description">当前会话和持久化记录已自动合并，并按时间倒序展示。</p>
           </div>
           <div className="history-head-actions">
-            <span className="status-pill online">{operationItems.length} 条</span>
+            <span className="status-pill online">{displayOperationItems.length} 条</span>
             {onRefresh ? (
               <button
                 className="history-icon-button refresh-icon-button"
@@ -170,11 +252,52 @@ export function HistoryPage({ workspaceRuns, persistedItems, persistedError, onR
           </div>
         </div>
 
+        <div className="asset-pagination history-pagination" aria-label="历史分页">
+          <div className="asset-pagination-summary">
+            {persistedHistoryTotal > 0 ? `第 ${pageStart}-${pageEnd} 条，共 ${persistedHistoryTotal} 条` : "暂无历史"}
+          </div>
+          <div className="asset-pagination-controls">
+            <button
+              className="history-icon-button asset-page-button"
+              type="button"
+              onClick={() => void handlePageChange(persistedHistoryPage - 1)}
+              disabled={changingPage || persistedHistoryPage <= 1}
+              aria-label="上一页"
+              title="上一页"
+            >
+              <span aria-hidden="true">‹</span>
+            </button>
+            <span className="asset-page-indicator">
+              {persistedHistoryPage} / {totalPages}
+            </span>
+            <button
+              className="history-icon-button asset-page-button"
+              type="button"
+              onClick={() => void handlePageChange(persistedHistoryPage + 1)}
+              disabled={changingPage || persistedHistoryPage >= totalPages}
+              aria-label="下一页"
+              title="下一页"
+            >
+              <span aria-hidden="true">›</span>
+            </button>
+            <label className="asset-page-size">
+              <span>每页</span>
+              <select value={persistedHistoryPageSize} onChange={(event) => void handlePageSizeChange(Number(event.target.value))} disabled={changingPage}>
+                {[12, 24, 48, 72].map((size) => (
+                  <option value={size} key={size}>
+                    {size}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
+
         {persistedError ? <p className="error-text">{persistedError}</p> : null}
 
-        {operationItems.length > 0 ? (
+        {displayOperationItems.length > 0 ? (
           <div className="session-run-list">
-            {operationItems.map((item) => {
+            {displayOperationItems.map((item) => {
               const historyCollapsed = collapsedHistoryIds.includes(item.id);
               return (
               <article className="drawer-panel history-drawer unified-history-drawer" key={item.id}>
@@ -269,6 +392,7 @@ export function HistoryPage({ workspaceRuns, persistedItems, persistedError, onR
             <p className="muted">当前筛选条件下没有操作记录。</p>
           </div>
         )}
+
       </section>
 
       {previewState ? (

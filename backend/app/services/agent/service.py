@@ -747,7 +747,7 @@ class AgentService:
 
     def end_conversation_turn(self, *, conversation_id: str, current_user: User) -> AgentConversationDetail:
         conversation = self._get_conversation(conversation_id, current_user=current_user)
-        reply = "好的，本次对话已结束。需要继续时，可以直接发送新的需求。"
+        reply = "好的，本次对话已结束。如果有其他需求，请新开对话窗口～"
         self._create_message(
             conversation_id=conversation.id,
             current_user=current_user,

@@ -17,4 +17,7 @@ export interface PersistedHistoryItem {
 
 export interface PersistedHistoryResponse {
   items: PersistedHistoryItem[];
+  total: number;
+  page: number;
+  page_size: number;
 }

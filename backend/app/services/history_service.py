@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from fastapi import HTTPException, status
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, or_, select
 
 from app.db.session import SessionLocal, init_db
 from app.models.generation_record import GenerationRecord
@@ -24,16 +24,27 @@ class HistoryService:
         self._bootstrapped_legacy = False
         init_db()
 
-    def list_records(self, *, current_user: User, include_all: bool = False) -> HistoryListResponse:
+    def list_records(
+        self,
+        *,
+        current_user: User,
+        include_all: bool = False,
+        kind: str | None = None,
+        keyword: str | None = None,
+        page: int = 1,
+        page_size: int = 24,
+    ) -> HistoryListResponse:
         self._bootstrap_from_legacy_file()
         with SessionLocal() as session:
             statement = select(GenerationRecord).order_by(desc(GenerationRecord.created_at))
             if current_user.role != "root" or not include_all:
                 statement = statement.where(GenerationRecord.user_id == current_user.id)
-            records = session.execute(statement).scalars().all()
+            statement = self._apply_filters(statement, kind=kind, keyword=keyword)
+            total = session.execute(select(func.count()).select_from(statement.subquery())).scalar_one()
+            records = session.execute(statement.offset((page - 1) * page_size).limit(page_size)).scalars().all()
             users = {user.id: user for user in session.execute(select(User)).scalars().all()}
         items = [self._with_preview_url(self._to_schema(record, current_user=current_user, users=users)) for record in records]
-        return HistoryListResponse(items=self._dedupe_items(items))
+        return HistoryListResponse(items=self._dedupe_items(items), total=total, page=page, page_size=page_size)
 
     def create_record(self, payload: HistoryRecordCreate, *, current_user: User | None = None) -> HistoryRecord:
         self._bootstrap_from_legacy_file()
@@ -108,6 +119,24 @@ class HistoryService:
                 )
             session.commit()
         self._bootstrapped_legacy = True
+
+    def _apply_filters(self, statement, *, kind: str | None, keyword: str | None):
+        normalized_kind = (kind or "").strip()
+        if normalized_kind and normalized_kind != "全部":
+            statement = statement.where(GenerationRecord.kind == normalized_kind)
+
+        normalized_keyword = (keyword or "").strip()
+        if normalized_keyword:
+            pattern = f"%{normalized_keyword}%"
+            statement = statement.where(
+                or_(
+                    GenerationRecord.title.ilike(pattern),
+                    GenerationRecord.model.ilike(pattern),
+                    GenerationRecord.provider.ilike(pattern),
+                    GenerationRecord.prompt.ilike(pattern),
+                )
+            )
+        return statement
 
     def _to_schema(self, record: GenerationRecord, *, current_user: User, users: dict[str, User]) -> HistoryRecord:
         owner = users.get(record.user_id or "")

@@ -24,3 +24,6 @@ class AssetRecord(BaseModel):
 
 class AssetListResponse(BaseModel):
     items: list[AssetRecord]
+    total: int
+    page: int
+    page_size: int

@@ -685,15 +685,31 @@ export async function submitRemoveBackground(payload: { file?: File | null; sour
   return response.blob();
 }
 
-export async function fetchPersistedHistory(includeAll = false): Promise<PersistedHistoryResponse> {
-  const search = new URLSearchParams({ _: String(Date.now()) });
+export async function fetchPersistedHistory(
+  includeAll = false,
+  page = 1,
+  pageSize = 24,
+  kind?: string | null,
+  keyword?: string | null,
+): Promise<PersistedHistoryResponse> {
+  const search = new URLSearchParams({ _: String(Date.now()), page: String(page), page_size: String(pageSize) });
   if (includeAll) search.set("include_all", "true");
+  if (kind && kind !== "全部") search.set("kind", kind);
+  if (keyword?.trim()) search.set("keyword", keyword.trim());
   const response = await apiFetch(`${buildApiUrl("/history")}?${search.toString()}`, { cache: "no-store" });
   return handleJsonResponse<PersistedHistoryResponse>(response);
 }
 
-export async function fetchPersistedAssets(scope = "library"): Promise<PersistedAssetResponse> {
-  const search = new URLSearchParams({ _: String(Date.now()), scope });
+export async function fetchPersistedAssets(
+  scope = "library",
+  page = 1,
+  pageSize = 24,
+  moduleKind?: string | null,
+  keyword?: string | null,
+): Promise<PersistedAssetResponse> {
+  const search = new URLSearchParams({ _: String(Date.now()), scope, page: String(page), page_size: String(pageSize) });
+  if (moduleKind && moduleKind !== "全部") search.set("module_kind", moduleKind);
+  if (keyword?.trim()) search.set("keyword", keyword.trim());
   const response = await apiFetch(`${buildApiUrl("/assets")}?${search.toString()}`, { cache: "no-store" });
   return handleJsonResponse<PersistedAssetResponse>(response);
 }

@@ -19,4 +19,7 @@ export interface PersistedAssetItem {
 
 export interface PersistedAssetResponse {
   items: PersistedAssetItem[];
+  total: number;
+  page: number;
+  page_size: number;
 }

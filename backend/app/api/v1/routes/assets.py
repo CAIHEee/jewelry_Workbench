@@ -15,9 +15,21 @@ service = AssetService()
 def list_assets(
     scope: str = Query(default="library"),
     owner_user_id: str | None = Query(default=None),
+    module_kind: str | None = Query(default=None),
+    keyword: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=24, ge=1, le=100),
     current_user: User = Depends(get_current_user),
 ) -> AssetListResponse:
-    return service.list_records(current_user=current_user, scope=scope, owner_user_id=owner_user_id)
+    return service.list_records(
+        current_user=current_user,
+        scope=scope,
+        owner_user_id=owner_user_id,
+        module_kind=module_kind,
+        keyword=keyword,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.post("/assets/upload", response_model=AssetRecord, status_code=status.HTTP_201_CREATED)

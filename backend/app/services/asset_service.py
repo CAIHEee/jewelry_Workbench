@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 import httpx
 from fastapi import HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import desc, or_, select
+from sqlalchemy import desc, func, or_, select
 
 from app.db.session import SessionLocal, init_db
 from app.models.asset_record import AssetRecord as AssetRecordModel
@@ -27,13 +27,33 @@ class AssetService:
         self.storage_service = StorageService()
         init_db()
 
-    def list_records(self, *, current_user: User, scope: str = "library", owner_user_id: str | None = None) -> AssetListResponse:
+    def list_records(
+        self,
+        *,
+        current_user: User,
+        scope: str = "library",
+        owner_user_id: str | None = None,
+        module_kind: str | None = None,
+        keyword: str | None = None,
+        page: int = 1,
+        page_size: int = 24,
+    ) -> AssetListResponse:
         with SessionLocal() as session:
-            statement = select(AssetRecordModel).order_by(desc(AssetRecordModel.created_at))
-            statement = self._apply_scope(statement, current_user=current_user, scope=scope, owner_user_id=owner_user_id)
+            scoped_statement = select(AssetRecordModel)
+            scoped_statement = self._apply_scope(scoped_statement, current_user=current_user, scope=scope, owner_user_id=owner_user_id)
+            scoped_statement = self._apply_filters(scoped_statement, module_kind=module_kind, keyword=keyword)
+
+            total = session.execute(select(func.count()).select_from(scoped_statement.subquery())).scalar_one()
+
+            statement = scoped_statement.order_by(desc(AssetRecordModel.created_at)).offset((page - 1) * page_size).limit(page_size)
             records = session.execute(statement).scalars().all()
             owners = self._load_user_map(session)
-        return AssetListResponse(items=[self._to_schema(record, current_user=current_user, owners=owners) for record in records])
+        return AssetListResponse(
+            items=[self._to_schema(record, current_user=current_user, owners=owners) for record in records],
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
 
     async def create_input_asset(
         self,
@@ -298,6 +318,24 @@ class AssetService:
                 AssetRecordModel.owner_user_id == current_user.id,
             )
         )
+
+    def _apply_filters(self, statement, *, module_kind: str | None, keyword: str | None):
+        normalized_module_kind = (module_kind or "").strip()
+        if normalized_module_kind:
+            statement = statement.where(AssetRecordModel.module_kind == normalized_module_kind)
+
+        normalized_keyword = (keyword or "").strip()
+        if normalized_keyword:
+            keyword_pattern = f"%{normalized_keyword}%"
+            statement = statement.where(
+                or_(
+                    AssetRecordModel.name.ilike(keyword_pattern),
+                    AssetRecordModel.source_kind.ilike(keyword_pattern),
+                    AssetRecordModel.module_kind.ilike(keyword_pattern),
+                    AssetRecordModel.metadata_json.ilike(keyword_pattern),
+                )
+            )
+        return statement
 
     def _to_schema(self, record: AssetRecordModel, *, current_user: User, owners: dict[str, User]) -> AssetRecord:
         preview_url = self.build_asset_content_url(record.storage_url, record.name)

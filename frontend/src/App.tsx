@@ -93,6 +93,21 @@ function mapKindToAssetCategory(kind: string) {
   return normalizedKind ? getHistoryKindLabel(normalizedKind) : kind;
 }
 
+function mapAssetCategoryToModuleKind(category: string) {
+  const categoryMap: Record<string, string | null> = {
+    文生图: "text_to_image",
+    生成多视图: "multi_view",
+    线稿转写实图: "sketch_to_realistic",
+    产品精修: "product_refine",
+    裸石设计: "gemstone_design",
+    高清放大: "upscale",
+    多图融合: "fusion",
+    转灰度图: "grayscale_relief",
+    已上传资产: null,
+  };
+  return categoryMap[category] ?? null;
+}
+
 function buildPreviewBackground(url: string | null | undefined) {
   if (!url) return "linear-gradient(135deg, #2b3341 0%, #68758a 100%)";
   return `center / cover no-repeat url("${url}")`;
@@ -299,7 +314,18 @@ export default function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [workspaceRuns, setWorkspaceRuns] = useState<WorkspaceRun[]>([]);
   const [persistedItems, setPersistedItems] = useState<PersistedHistoryItem[]>([]);
+  const [persistedHistoryPage, setPersistedHistoryPage] = useState(1);
+  const [persistedHistoryPageSize, setPersistedHistoryPageSize] = useState(12);
+  const [persistedHistoryTotal, setPersistedHistoryTotal] = useState(0);
+  const [persistedHistoryKind, setPersistedHistoryKind] = useState<string | null>(null);
+  const [persistedHistoryKeyword, setPersistedHistoryKeyword] = useState("");
   const [persistedAssets, setPersistedAssets] = useState<PersistedAssetItem[]>([]);
+  const [persistedAssetPage, setPersistedAssetPage] = useState(1);
+  const [persistedAssetPageSize, setPersistedAssetPageSize] = useState(24);
+  const [persistedAssetTotal, setPersistedAssetTotal] = useState(0);
+  const [persistedAssetScope, setPersistedAssetScope] = useState("library");
+  const [persistedAssetModuleKind, setPersistedAssetModuleKind] = useState<string | null>(null);
+  const [persistedAssetKeyword, setPersistedAssetKeyword] = useState("");
   const [persistedError, setPersistedError] = useState<string | null>(null);
   const [assetError, setAssetError] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -396,7 +422,11 @@ export default function App() {
     setCurrentUser(null);
     setWorkspaceRuns([]);
     setPersistedItems([]);
+    setPersistedHistoryPage(1);
+    setPersistedHistoryTotal(0);
     setPersistedAssets([]);
+    setPersistedAssetPage(1);
+    setPersistedAssetTotal(0);
     setAdminUsers([]);
     setAdminSystemStatus(null);
   }
@@ -404,9 +434,22 @@ export default function App() {
   async function refreshPersistedHistory(user = currentUser) {
     if (!user) return;
     try {
-      const response = await fetchPersistedHistory(user.role === "root");
+      const response = await fetchPersistedHistory(user.role === "root", persistedHistoryPage, persistedHistoryPageSize, persistedHistoryKind, persistedHistoryKeyword);
+      if (response.items.length === 0 && response.total > 0 && response.page > 1) {
+        const lastPage = Math.max(1, Math.ceil(response.total / response.page_size));
+        const fallbackResponse = await fetchPersistedHistory(user.role === "root", lastPage, response.page_size, persistedHistoryKind, persistedHistoryKeyword);
+        setPersistedItems(fallbackResponse.items);
+        setPersistedHistoryPage(fallbackResponse.page);
+        setPersistedHistoryPageSize(fallbackResponse.page_size);
+        setPersistedHistoryTotal(fallbackResponse.total);
+        setPersistedError(null);
+        return;
+      }
       const dedupedItems = dedupePersistedHistoryItems(response.items);
       setPersistedItems(dedupedItems);
+      setPersistedHistoryPage(response.page);
+      setPersistedHistoryPageSize(response.page_size);
+      setPersistedHistoryTotal(response.total);
       setWorkspaceRuns((current) => current.filter((run) => !dedupedItems.some((item) => isPersistedHistoryDuplicateOfRun(item, run))));
       setPersistedError(null);
     } catch (error) {
@@ -414,14 +457,81 @@ export default function App() {
     }
   }
 
-  async function refreshPersistedAssets() {
+  async function handleHistoryPageChange(page: number) {
+    const response = await fetchPersistedHistory(currentUser?.role === "root", page, persistedHistoryPageSize, persistedHistoryKind, persistedHistoryKeyword);
+    const dedupedItems = dedupePersistedHistoryItems(response.items);
+    setPersistedItems(dedupedItems);
+    setPersistedHistoryPage(response.page);
+    setPersistedHistoryPageSize(response.page_size);
+    setPersistedHistoryTotal(response.total);
+  }
+
+  async function handleHistoryPageSizeChange(pageSize: number) {
+    setPersistedHistoryPage(1);
+    const response = await fetchPersistedHistory(currentUser?.role === "root", 1, pageSize, persistedHistoryKind, persistedHistoryKeyword);
+    const dedupedItems = dedupePersistedHistoryItems(response.items);
+    setPersistedItems(dedupedItems);
+    setPersistedHistoryPage(response.page);
+    setPersistedHistoryPageSize(response.page_size);
+    setPersistedHistoryTotal(response.total);
+  }
+
+  async function handleHistoryFilterChange(kind: string | null, keyword: string) {
+    setPersistedHistoryKind(kind);
+    setPersistedHistoryKeyword(keyword);
+    setPersistedHistoryPage(1);
+    const response = await fetchPersistedHistory(currentUser?.role === "root", 1, persistedHistoryPageSize, kind, keyword);
+    const dedupedItems = dedupePersistedHistoryItems(response.items);
+    setPersistedItems(dedupedItems);
+    setPersistedHistoryPage(response.page);
+    setPersistedHistoryPageSize(response.page_size);
+    setPersistedHistoryTotal(response.total);
+  }
+
+  async function refreshPersistedAssets(
+    page = persistedAssetPage,
+    pageSize = persistedAssetPageSize,
+    scope = persistedAssetScope,
+    moduleKind = persistedAssetModuleKind,
+    keyword = persistedAssetKeyword,
+  ) {
     try {
-      const response = await fetchPersistedAssets("library");
+      const response = await fetchPersistedAssets(scope, page, pageSize, moduleKind, keyword);
+      if (response.items.length === 0 && response.total > 0 && response.page > 1) {
+        const lastPage = Math.max(1, Math.ceil(response.total / response.page_size));
+        const fallbackResponse = await fetchPersistedAssets(scope, lastPage, response.page_size, moduleKind, keyword);
+        setPersistedAssets(fallbackResponse.items);
+        setPersistedAssetPage(fallbackResponse.page);
+        setPersistedAssetPageSize(fallbackResponse.page_size);
+        setPersistedAssetTotal(fallbackResponse.total);
+        setAssetError(null);
+        return;
+      }
       setPersistedAssets(response.items);
+      setPersistedAssetPage(response.page);
+      setPersistedAssetPageSize(response.page_size);
+      setPersistedAssetTotal(response.total);
       setAssetError(null);
     } catch (error) {
       setAssetError(error instanceof Error ? error.message : "加载资产失败");
     }
+  }
+
+  async function handleAssetPageChange(page: number) {
+    await refreshPersistedAssets(page, persistedAssetPageSize);
+  }
+
+  async function handleAssetPageSizeChange(pageSize: number) {
+    setPersistedAssetPage(1);
+    await refreshPersistedAssets(1, pageSize);
+  }
+
+  async function handleAssetFilterChange(nextScope: string, nextModuleKind: string | null, nextKeyword: string) {
+    setPersistedAssetScope(nextScope);
+    setPersistedAssetModuleKind(nextModuleKind);
+    setPersistedAssetKeyword(nextKeyword);
+    setPersistedAssetPage(1);
+    await refreshPersistedAssets(1, persistedAssetPageSize, nextScope, nextModuleKind, nextKeyword);
   }
 
   async function refreshAdminUsers(user = currentUser) {
@@ -498,6 +608,7 @@ export default function App() {
         id: `asset-${item.id}`,
         name: resolvedName,
         category: moduleLabel,
+        moduleKind: item.module_kind,
         source: item.visibility === "community" ? "社区资产" : "我的资产",
         updatedAt: formatHistoryTimestamp(item.created_at),
         sortAt: item.created_at,
@@ -522,6 +633,7 @@ export default function App() {
         id: `session-${item.id}`,
         name: appendSecondSuffixToName(item.title, item.createdAt),
         category: mapKindToAssetCategory(item.kind),
+        moduleKind: item.kind,
         source: "当前会话",
         updatedAt: formatHistoryTimestamp(item.createdAt),
         sortAt: item.createdAt,
@@ -647,8 +759,16 @@ export default function App() {
             workspaceRuns={workspaceRuns}
             persistedItems={persistedItems}
             persistedError={persistedError}
+            persistedHistoryPage={persistedHistoryPage}
+            persistedHistoryPageSize={persistedHistoryPageSize}
+            persistedHistoryTotal={persistedHistoryTotal}
+            persistedHistoryKind={persistedHistoryKind}
+            persistedHistoryKeyword={persistedHistoryKeyword}
             onRefresh={refreshPersistedHistory}
             onDeleteHistory={handleDeleteHistory}
+            onPageChange={handleHistoryPageChange}
+            onPageSizeChange={handleHistoryPageSizeChange}
+            onFilterChange={handleHistoryFilterChange}
           />
         </section>
         <section className={activeView === "asset-management" ? "view-panel active" : "view-panel hidden"}>
@@ -656,12 +776,20 @@ export default function App() {
             assetItems={assetItems}
             assetError={assetError}
             currentUser={currentUser}
+            assetPage={persistedAssetPage}
+            assetPageSize={persistedAssetPageSize}
+            assetTotal={persistedAssetTotal}
+            assetModuleKind={persistedAssetModuleKind}
+            assetKeyword={persistedAssetKeyword}
             onDeleteAsset={handleDeleteAsset}
             onDeleteHistory={handleDeleteHistory}
             onPublishAsset={handlePublishAsset}
             onUnpublishAsset={handleUnpublishAsset}
             onUploadCommunityAsset={currentUser.role === "root" ? handleUploadCommunityAsset : undefined}
             onRefresh={refreshPersistedAssets}
+            onAssetPageChange={handleAssetPageChange}
+            onAssetPageSizeChange={handleAssetPageSizeChange}
+            onAssetFilterChange={handleAssetFilterChange}
           />
         </section>
         <section className={activeView === "admin" ? "view-panel active" : "view-panel hidden"}>

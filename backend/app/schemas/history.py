@@ -55,3 +55,6 @@ class HistoryRecord(BaseModel):
 
 class HistoryListResponse(BaseModel):
     items: list[HistoryRecord]
+    total: int
+    page: int
+    page_size: int
