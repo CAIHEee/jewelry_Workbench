@@ -102,7 +102,7 @@ BUILTIN_GROUP_TEMPLATES: list[dict[str, Any]] = [
         "items": [
             {"key": "DASHSCOPE_API_KEY", "label": "DashScope API Key (留空=复用 Agent)", "type": "password", "required": False, "default": "", "is_secret": True},
             {"key": "MULTI_VIEW_PROMPT_MODEL", "label": "模型", "type": "text", "required": True, "default": "qwen3-vl-plus", "is_secret": False},
-            {"key": "MULTI_VIEW_PROMPT_THINKING_BUDGET", "label": "Thinking Budget", "type": "number", "required": False, "default": "81920", "is_secret": False},
+            {"key": "MULTI_VIEW_PROMPT_THINKING_BUDGET", "label": "Thinking Budget", "type": "number", "required": False, "default": "32768", "is_secret": False},
         ],
     },
 ]

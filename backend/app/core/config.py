@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     agent_llm_strict_tools: bool = Field(default=True, alias="AGENT_LLM_STRICT_TOOLS")
     dashscope_api_key: str | None = Field(default=None, alias="DASHSCOPE_API_KEY")
     multi_view_prompt_model: str = Field(default="qwen3-vl-plus", alias="MULTI_VIEW_PROMPT_MODEL")
-    multi_view_prompt_thinking_budget: int = Field(default=81920, alias="MULTI_VIEW_PROMPT_THINKING_BUDGET")
+    multi_view_prompt_thinking_budget: int = Field(default=32768, alias="MULTI_VIEW_PROMPT_THINKING_BUDGET")
     agent_vision_llm_base_url: str | None = Field(default=None, alias="AGENT_VISION_LLM_BASE_URL")
     agent_vision_llm_api_key: str | None = Field(default=None, alias="AGENT_VISION_LLM_API_KEY")
     agent_vision_llm_model: str | None = Field(default=None, alias="AGENT_VISION_LLM_MODEL")

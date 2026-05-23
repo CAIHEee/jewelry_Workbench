@@ -222,7 +222,7 @@ def test_qwen_multi_view_prompt_payload_uses_image_and_thinking(monkeypatch) -> 
     monkeypatch.setattr(service.settings, "dashscope_api_key", "")
     monkeypatch.setattr(service.settings, "agent_llm_api_key", "test-qwen-key")
     monkeypatch.setattr(service.settings, "multi_view_prompt_model", "qwen3-vl-plus")
-    monkeypatch.setattr(service.settings, "multi_view_prompt_thinking_budget", 81920)
+    monkeypatch.setattr(service.settings, "multi_view_prompt_thinking_budget", 32768)
 
     captured: dict[str, object] = {}
 
@@ -257,7 +257,7 @@ def test_qwen_multi_view_prompt_payload_uses_image_and_thinking(monkeypatch) -> 
     assert payload["model"] == "qwen3-vl-plus"
     assert payload["stream"] is True
     assert payload["enable_thinking"] is True
-    assert payload["thinking_budget"] == 81920
+    assert payload["thinking_budget"] == 32768
     content = payload["messages"][0]["content"]
     assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
     assert "用户补充提示词：增加侧面厚度" in content[1]["text"]
