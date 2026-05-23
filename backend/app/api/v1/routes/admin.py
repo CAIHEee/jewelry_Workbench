@@ -1,19 +1,33 @@
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import text
 
 from app.api.deps import require_root
 from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.models.user import User
-from app.schemas.admin import AdminSystemStatus, AdminUser, AdminUserCreate, AdminUserListResponse, AdminUserUpdate, UserPermissionUpdateRequest
+from app.schemas.admin import (
+    AdminSystemStatus,
+    AdminUser,
+    AdminUserCreate,
+    AdminUserListResponse,
+    AdminUserUpdate,
+    ConfigGroup,
+    ConfigGroupCreate,
+    ConfigGroupUpdate,
+    ConfigListResponse,
+    ConfigToggleResponse,
+    UserPermissionUpdateRequest,
+)
 from app.schemas.auth import ModulePermissionItem, PasswordResetRequest
+from app.services.config_service import ConfigService
 from app.services.user_service import UserService
 
 
 router = APIRouter()
 service = UserService()
+config_service = ConfigService()
 settings = get_settings()
 LOCAL_STORAGE_PATH = (Path(__file__).resolve().parents[4] / "data" / "local_assets").as_posix()
 
@@ -69,3 +83,101 @@ def update_permissions(
     _: User = Depends(require_root),
 ) -> list[ModulePermissionItem]:
     return service.update_permissions(user_id, payload)
+
+
+# ==================== 密钥管理 API ====================
+
+
+@router.get("/admin/config/keys", response_model=ConfigListResponse)
+def list_config_keys(_: User = Depends(require_root)) -> ConfigListResponse:
+    """获取所有密钥配置 (脱敏)"""
+    return config_service.get_config_list(show_raw=False)
+
+
+@router.get("/admin/config/keys/{group_key}", response_model=ConfigGroup)
+def get_config_key(group_key: str, _: User = Depends(require_root)) -> ConfigGroup:
+    """获取单个密钥配置 (明文，用于编辑)"""
+    try:
+        return config_service.get_group_raw(group_key)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+
+@router.patch("/admin/config/keys/{group_key}", response_model=ConfigGroup)
+def update_config_key(
+    group_key: str,
+    payload: ConfigGroupUpdate,
+    _: User = Depends(require_root),
+) -> ConfigGroup:
+    """更新密钥配置"""
+    try:
+        return config_service.update_group(
+            group_key=group_key,
+            items=payload.items,
+            is_active=payload.is_active,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+
+@router.post("/admin/config/keys/{group_key}/toggle", response_model=ConfigToggleResponse)
+def toggle_config_key(
+    group_key: str,
+    _: User = Depends(require_root),
+) -> ConfigToggleResponse:
+    """切换密钥启用/停用状态"""
+    try:
+        current = config_service.get_group(group_key)
+        new_state = not current.is_active
+        
+        config_service.update_group(
+            group_key=group_key,
+            items={},
+            is_active=new_state,
+        )
+        
+        return ConfigToggleResponse(
+            group_key=group_key,
+            is_active=new_state,
+            message=f"密钥已{'启用' if new_state else '停用'}",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+
+@router.get("/admin/config/catalog", response_model=dict)
+def get_model_catalog(_: User = Depends(require_root)) -> dict:
+    """获取当前激活的模型目录（供前端下拉框同步使用）"""
+    return config_service.get_model_catalog_for_frontend()
+
+
+@router.post("/admin/config/keys", response_model=ConfigGroup, status_code=status.HTTP_201_CREATED)
+def create_config_key(
+    payload: ConfigGroupCreate,
+    _: User = Depends(require_root),
+) -> ConfigGroup:
+    """添加新供应商配置（OpenAI 兼容接口）"""
+    try:
+        return config_service.create_group(
+            group_key=payload.group_key,
+            label=payload.label,
+            category=payload.category,
+            base_url=payload.base_url,
+            api_key=payload.api_key,
+            models=payload.models,
+            timeout=payload.timeout,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.delete("/admin/config/keys/{group_key}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_config_key(
+    group_key: str,
+    _: User = Depends(require_root),
+) -> None:
+    """删除供应商配置（仅支持自定义供应商）"""
+    try:
+        config_service.delete_group(group_key)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))

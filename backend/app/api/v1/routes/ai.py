@@ -45,16 +45,9 @@ def list_features() -> GenerationFeatureCatalog:
 
 @router.get("/models", response_model=ModelCatalogResponse)
 def list_models() -> ModelCatalogResponse:
-    cached = cache_service.get_json(cache_service.model_catalog_key())
-    if cached is not None:
-        return ModelCatalogResponse.model_validate(cached)
-
+    # 不缓存模型目录，因为密钥激活状态可能随时变化
+    # 每次请求都重新获取，确保返回最新的模型列表
     response = service.get_model_catalog()
-    cache_service.set_json(
-        cache_service.model_catalog_key(),
-        response.model_dump(mode="json"),
-        ttl_seconds=get_settings().cache_model_catalog_ttl_seconds,
-    )
     return response
 
 

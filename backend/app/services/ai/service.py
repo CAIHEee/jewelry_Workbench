@@ -95,9 +95,19 @@ class AIService:
         )
 
     def get_model_catalog(self) -> ModelCatalogResponse:
+        # 清除 settings 缓存并获取最新的配置，确保密钥激活状态是最新的
+        from app.core.config import get_settings as _get_settings
+        _get_settings.cache_clear()
+        current_settings = _get_settings()
+        
         platform_label = self._upstream_platform_label()
-        return ModelCatalogResponse(
-            models=[
+        models = []
+        for model in MODEL_CATALOG.values():
+            # 根据密钥激活状态过滤模型
+            provider = model.provider.value if hasattr(model.provider, 'value') else str(model.provider)
+            if not self._is_provider_active_for_model(model.id, provider, current_settings):
+                continue
+            models.append(
                 TTAPIModelDefinition(
                     id=model.id,
                     label=model.label,
@@ -108,9 +118,28 @@ class AIService:
                     supports_reference_images=model.supports_reference_images,
                     pricing_hint=self._build_model_pricing_hint(model, platform_label),
                 )
-                for model in MODEL_CATALOG.values()
-            ]
-        )
+            )
+        return ModelCatalogResponse(models=models)
+
+    def _is_provider_active_for_model(self, model_id: str, provider: str, settings: Any = None) -> bool:
+        """检查模型对应的供应商是否激活"""
+        if settings is None:
+            settings = self.settings
+            
+        model_lower = model_id.lower()
+        provider_lower = provider.lower()
+        
+        # 根据模型 ID 判断供应商
+        # gemini 模型也通过 APIYI 平台调用
+        if provider_lower == "closeai" or "-closeai" in model_lower:
+            return settings.is_closeai_active
+        elif provider_lower == "ttapi" or "-ttapi" in model_lower:
+            return settings.is_ttapi_active
+        elif provider_lower in ("apiyi", "gemini") or "-apiyi" in model_lower:
+            return settings.is_apiyi_active
+        
+        # 默认返回 True（向后兼容）
+        return True
 
     async def generate_text_to_image(
         self,
@@ -581,14 +610,6 @@ class AIService:
             )
         return model
 
-    def _require_api_key(self) -> str:
-        if not self.settings.ttapi_api_key:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="TTAPI_API_KEY is not configured.",
-            )
-        return self.settings.ttapi_api_key
-
     def _require_apiyi_api_key(self) -> str:
         if not self.settings.apiyi_api_key:
             raise HTTPException(
@@ -604,6 +625,14 @@ class AIService:
                 detail="CLOSEAI_API_KEY is not configured.",
             )
         return self.settings.closeai_api_key
+
+    def _require_api_key(self) -> str:
+        if not self.settings.ttapi_api_key:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="TTAPI_API_KEY is not configured.",
+            )
+        return self.settings.ttapi_api_key
 
     def _use_apiyi(self) -> bool:
         return self.settings.ai_upstream_platform.strip().lower() == "apiyi"

@@ -9738,3 +9738,318 @@ input:disabled {
     border-width: 1px;
   }
 }
+
+/* ==================== 密钥管理组件样式 ==================== */
+
+.config-management {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.config-category {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.config-category-header {
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 203, 87, 0.15);
+}
+
+.config-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.config-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 16px;
+  transition: all 0.2s ease;
+}
+
+.config-card.active {
+  border-color: rgba(255, 203, 87, 0.3);
+  background: rgba(255, 203, 87, 0.05);
+}
+
+.config-card.inactive {
+  opacity: 0.7;
+}
+
+.config-card.editing {
+  border-color: rgba(255, 203, 87, 0.5);
+  box-shadow: 0 0 0 1px rgba(255, 203, 87, 0.2);
+}
+
+.config-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.config-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.config-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.config-status-dot.active {
+  background: #4ade80;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.5);
+}
+
+.config-status-dot.inactive {
+  background: #6b7280;
+}
+
+.config-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(255, 203, 87, 0.2);
+  color: #fbbf24;
+}
+
+.config-card-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.config-description {
+  font-size: 13px;
+  color: #9ca3af;
+  margin: 0 0 12px 0;
+}
+
+.config-preview {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 8px;
+}
+
+.config-preview-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+}
+
+.config-preview-label {
+  font-size: 11px;
+  color: #6b7280;
+}
+
+.config-preview-value {
+  font-size: 13px;
+  font-family: monospace;
+  color: #d1d5db;
+}
+
+.config-edit-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.config-field > span:first-child {
+  font-size: 13px;
+  color: #9ca3af;
+}
+
+.config-required {
+  color: #ef4444;
+  margin-left: 4px;
+}
+
+.config-edit-hint {
+  padding: 12px 16px;
+  background: rgba(251, 191, 36, 0.1);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  border-radius: 10px;
+  margin-top: 16px;
+}
+
+.config-edit-hint p {
+  font-size: 13px;
+  color: #fbbf24;
+  margin: 0;
+}
+
+/* 警告按钮 */
+.warning-button {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.warning-button:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.25);
+}
+
+.success-button {
+  background: rgba(74, 222, 128, 0.15);
+  color: #4ade80;
+  border-color: rgba(74, 222, 128, 0.3);
+}
+
+.success-button:hover:not(:disabled) {
+  background: rgba(74, 222, 128, 0.25);
+}
+
+/* 危险按钮 */
+.danger-button {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.danger-button:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.25);
+}
+
+/* 工具栏 */
+.config-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+/* 自定义标记 */
+.config-badge.custom {
+  background: rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+}
+
+/* 接口类型提示 */
+.api-type-hint {
+  padding: 12px 16px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.api-type-hint p {
+  margin: 4px 0;
+  color: #93c5fd;
+  font-size: 13px;
+}
+
+.api-type-hint small {
+  color: #6b7280;
+}
+
+/* 模型配置区域 */
+.models-config-section {
+  margin: 16px 0;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+}
+
+.models-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.models-header span {
+  font-size: 14px;
+  font-weight: 500;
+  color: #d1d5db;
+}
+
+.model-config-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.model-config-row .search-input {
+  flex: 1;
+}
+
+.model-config-row .danger-button {
+  flex: 0 0 32px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+  .config-preview {
+    grid-template-columns: 1fr;
+  }
+
+  .config-edit-form {
+    grid-template-columns: 1fr;
+  }
+
+  .config-card-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .config-card-actions {
+    width: 100%;
+  }
+
+  .config-card-actions button {
+    flex: 1;
+  }
+}
+
+/* Admin Tab Bar */
+.admin-tab-bar {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.admin-tab-button {
+  padding: 8px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  color: #9ca3af;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.admin-tab-button:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #d1d5db;
+}
+
+.admin-tab-button.active {
+  background: rgba(255, 203, 87, 0.15);
+  border-color: rgba(255, 203, 87, 0.3);
+  color: #fbbf24;
+}

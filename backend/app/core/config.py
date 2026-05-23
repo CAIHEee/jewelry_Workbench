@@ -12,6 +12,7 @@ class Settings(BaseSettings):
         env_file=str(ENV_FILE_PATH),
         env_file_encoding="utf-8",
         case_sensitive=False,
+        extra="ignore",  # 允许 .env 中存在未定义的字段（如 *_ACTIVE 标记）
     )
 
     app_name: str = Field(default="Jinma Jewelry Design System", alias="APP_NAME")
@@ -29,14 +30,17 @@ class Settings(BaseSettings):
     ai_upstream_platform: str = Field(default="apiyi", alias="AI_UPSTREAM_PLATFORM")
     ai_max_fusion_images: int = Field(default=6, alias="AI_MAX_FUSION_IMAGES")
     apiyi_api_key: str | None = Field(default=None, alias="APIYI_API_KEY")
+    apiyi_active: str | None = Field(default=None, alias="APIYI_ACTIVE")  # 密钥激活状态
     apiyi_base_url: str = Field(default="https://api.apiyi.com", alias="APIYI_BASE_URL")
     apiyi_openai_base_url: str = Field(default="https://api.apiyi.com/v1", alias="APIYI_OPENAI_BASE_URL")
     apiyi_gemini_base_url: str = Field(default="https://api.apiyi.com/v1beta", alias="APIYI_GEMINI_BASE_URL")
     apiyi_timeout_seconds: float = Field(default=600.0, alias="APIYI_TIMEOUT_SECONDS")
     closeai_api_key: str | None = Field(default=None, alias="CLOSEAI_API_KEY")
+    closeai_active: str | None = Field(default=None, alias="CLOSEAI_ACTIVE")  # 密钥激活状态
     closeai_base_url: str = Field(default="https://api.openai-proxy.org/v1", alias="CLOSEAI_BASE_URL")
     closeai_timeout_seconds: float = Field(default=1200.0, alias="CLOSEAI_TIMEOUT_SECONDS")
     ttapi_api_key: str | None = Field(default=None, alias="TTAPI_API_KEY")
+    ttapi_active: str | None = Field(default=None, alias="TTAPI_ACTIVE")  # 密钥激活状态
     ttapi_openai_base_url: str = Field(default="https://api.ttapi.org", alias="TTAPI_OPENAI_BASE_URL")
     ttapi_timeout_seconds: float = Field(default=120.0, alias="TTAPI_TIMEOUT_SECONDS")
     ttapi_poll_interval_seconds: float = Field(default=2.5, alias="TTAPI_POLL_INTERVAL_SECONDS")
@@ -111,6 +115,29 @@ class Settings(BaseSettings):
     @property
     def agent_service_allowed_origins(self) -> list[str]:
         return [item.strip() for item in self.agent_service_allowed_origins_raw.split(",") if item.strip()]
+
+    # ==================== 密钥激活状态辅助方法 ====================
+
+    def is_provider_active(self, provider: str) -> bool:
+        """检查指定供应商是否激活"""
+        active_key = f"{provider.lower()}_active"
+        active_value = getattr(self, active_key, None)
+        if active_value is not None:
+            return active_value.strip().lower() == "true"
+        # 如果没有 ACTIVE 标记，默认激活（向后兼容）
+        return True
+
+    @property
+    def is_apiyi_active(self) -> bool:
+        return self.is_provider_active("apiyi")
+
+    @property
+    def is_closeai_active(self) -> bool:
+        return self.is_provider_active("closeai")
+
+    @property
+    def is_ttapi_active(self) -> bool:
+        return self.is_provider_active("ttapi")
 
 
 @lru_cache

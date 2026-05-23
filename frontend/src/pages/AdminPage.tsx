@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { ConfigManagement } from "../components/ConfigManagement";
 import { SectionHeader } from "../components/SectionHeader";
 import { useViewport } from "../hooks/useViewport";
 import type { AdminSystemStatus, AdminUser } from "../types/admin";
@@ -72,6 +73,7 @@ export function AdminPage({
   const [toast, setToast] = useState<AdminToastState>(null);
   const [pendingUserSwitch, setPendingUserSwitch] = useState<PendingUserSwitchState>(null);
   const [deleteUserState, setDeleteUserState] = useState<DeleteUserState>(null);
+  const [adminTab, setAdminTab] = useState<"users" | "config">("users");
 
   const selectedUser = useMemo(() => users.find((item) => item.id === selectedUserId) ?? users[0] ?? null, [selectedUserId, users]);
   const hasUnsavedPermissionChanges = useMemo(() => {
@@ -323,164 +325,192 @@ export function AdminPage({
       <section className="panel compact-panel">
         <SectionHeader eyebrow="Root" title="系统管理" description="仅 root 可见，集中管理系统状态、用户账号与模块权限。" />
         {isMobile ? <p className="admin-mobile-hint">手机端已做简化适配，复杂权限批量编辑建议在平板或电脑端操作。</p> : null}
-        <div className="inline-action-row">
+
+        <div className="admin-tab-bar">
           <button
-            className="primary-button compact-button"
+            className={`admin-tab-button ${adminTab === "users" ? "active" : ""}`}
             type="button"
-            onClick={() =>
-              setCreateUserState({
-                username: "",
-                display_name: "",
-                email: "",
-                password: "",
-                submitting: false,
-                error: null,
-              })
-            }
+            onClick={() => setAdminTab("users")}
           >
-            新增用户
+            用户管理
           </button>
           <button
-            className="history-icon-button refresh-icon-button"
+            className={`admin-tab-button ${adminTab === "config" ? "active" : ""}`}
             type="button"
-            onClick={() => void handleRefresh()}
-            disabled={loading}
-            title={loading ? "刷新中" : "刷新列表"}
-            aria-label={loading ? "刷新中" : "刷新列表"}
+            onClick={() => setAdminTab("config")}
           >
-            <span aria-hidden="true">{loading ? "…" : "↻"}</span>
+            密钥管理
           </button>
         </div>
+
+        {adminTab === "users" ? (
+          <div className="inline-action-row">
+            <button
+              className="primary-button compact-button"
+              type="button"
+              onClick={() =>
+                setCreateUserState({
+                  username: "",
+                  display_name: "",
+                  email: "",
+                  password: "",
+                  submitting: false,
+                  error: null,
+                })
+              }
+            >
+              新增用户
+            </button>
+            <button
+              className="history-icon-button refresh-icon-button"
+              type="button"
+              onClick={() => void handleRefresh()}
+              disabled={loading}
+              title={loading ? "刷新中" : "刷新列表"}
+              aria-label={loading ? "刷新中" : "刷新列表"}
+            >
+              <span aria-hidden="true">{loading ? "…" : "↻"}</span>
+            </button>
+          </div>
+        ) : null}
         {error ? <p className="error-text">{error}</p> : null}
       </section>
 
-      <div className="dashboard-grid admin-management-grid">
-        <section className="panel compact-panel admin-management-panel">
-          <SectionHeader eyebrow="用户" title="账号列表" description="点击用户后可调整模块权限。" />
-          <div className="admin-user-panel-body">
-            <div className="admin-user-list-head">
-              <span>用户</span>
-              <span>{users.length} 个账号</span>
-            </div>
-            <div className="admin-user-list">
-              {users.map((user) => (
-                <article className={selectedUser?.id === user.id ? "admin-user-list-item active" : "admin-user-list-item"} key={user.id}>
-                  <button className="admin-user-main" type="button" onClick={() => syncPermissions(user)}>
-                    <div className="admin-user-main-copy">
-                      <h4>{user.display_name || user.username}</h4>
-                      <p>{user.username}</p>
-                      <div className="admin-user-meta-row">
-                        <span className="admin-user-meta-pill">{user.role}</span>
-                        <span className="admin-user-meta-pill">{user.is_disabled ? "已停用" : "启用中"}</span>
-                        {user.email ? <span className="admin-user-meta-pill subtle">{user.email}</span> : null}
+      {adminTab === "users" && (
+        <div className="dashboard-grid admin-management-grid">
+          <section className="panel compact-panel admin-management-panel">
+            <SectionHeader eyebrow="用户" title="账号列表" description="点击用户后可调整模块权限。" />
+            <div className="admin-user-panel-body">
+              <div className="admin-user-list-head">
+                <span>用户</span>
+                <span>{users.length} 个账号</span>
+              </div>
+              <div className="admin-user-list">
+                {users.map((user) => (
+                  <article className={selectedUser?.id === user.id ? "admin-user-list-item active" : "admin-user-list-item"} key={user.id}>
+                    <button className="admin-user-main" type="button" onClick={() => syncPermissions(user)}>
+                      <div className="admin-user-main-copy">
+                        <h4>{user.display_name || user.username}</h4>
+                        <p>{user.username}</p>
+                        <div className="admin-user-meta-row">
+                          <span className="admin-user-meta-pill">{user.role}</span>
+                          <span className="admin-user-meta-pill">{user.is_disabled ? "已停用" : "启用中"}</span>
+                          {user.email ? <span className="admin-user-meta-pill subtle">{user.email}</span> : null}
+                        </div>
                       </div>
-                    </div>
-                    <span className={user.is_disabled ? "status-pill warning" : "status-pill online"}>{user.is_disabled ? "停用" : "启用"}</span>
-                  </button>
-                  <div className="admin-user-actions">
-                    {user.role !== "root" ? (
-                      <button className="secondary-button compact-button" type="button" onClick={() => void handleToggleDisabled(user)}>
-                        {user.is_disabled ? "启用" : "停用"}
-                      </button>
-                    ) : null}
-                    {user.role !== "root" ? (
+                      <span className={user.is_disabled ? "status-pill warning" : "status-pill online"}>{user.is_disabled ? "停用" : "启用"}</span>
+                    </button>
+                    <div className="admin-user-actions">
+                      {user.role !== "root" ? (
+                        <button className="secondary-button compact-button" type="button" onClick={() => void handleToggleDisabled(user)}>
+                          {user.is_disabled ? "启用" : "停用"}
+                        </button>
+                      ) : null}
+                      {user.role !== "root" ? (
+                        <button
+                          className="secondary-button compact-button"
+                          type="button"
+                          onClick={() =>
+                            setDeleteUserState({
+                              user,
+                              submitting: false,
+                              error: null,
+                            })
+                          }
+                        >
+                          删除用户
+                        </button>
+                      ) : null}
                       <button
                         className="secondary-button compact-button"
                         type="button"
                         onClick={() =>
-                          setDeleteUserState({
+                          setResetPasswordState({
                             user,
+                            password: "",
+                            confirmPassword: "",
                             submitting: false,
                             error: null,
                           })
                         }
                       >
-                        删除用户
+                        重置密码
                       </button>
-                    ) : null}
-                    <button
-                      className="secondary-button compact-button"
-                      type="button"
-                      onClick={() =>
-                        setResetPasswordState({
-                          user,
-                          password: "",
-                          confirmPassword: "",
-                          submitting: false,
-                          error: null,
-                        })
-                      }
-                    >
-                      重置密码
-                    </button>
-                  </div>
-                </article>
-              ))}
+                    </div>
+                  </article>
+                ))}
+              </div>
             </div>
-          </div>
-        </section>
+          </section>
 
-        <section className="panel compact-panel admin-management-panel">
-          <div className="admin-permission-header">
-            <SectionHeader eyebrow="权限" title={selectedUser ? `模块权限: ${selectedUser.username}` : "模块权限"} description="root 默认全开，普通用户按模块开关。" />
-            {selectedUser ? (
-              <div className="inline-action-row admin-permission-toolbar">
-                {!permissionsEditing && selectedUser.role !== "root" ? <span className="admin-readonly-hint">只读模式</span> : null}
-                {selectedUser.role !== "root" ? (
-                  permissionsEditing ? (
-                    <>
-                      <button
-                        className="secondary-button compact-button"
-                        type="button"
-                        onClick={() => {
-                          setDraftPermissions(Object.fromEntries(selectedUser.permissions.map((item) => [item.module_key, item.is_enabled])));
-                          setPermissionsEditing(false);
-                        }}
-                        disabled={savingPermissions}
-                      >
-                        取消
+          <section className="panel compact-panel admin-management-panel">
+            <div className="admin-permission-header">
+              <SectionHeader eyebrow="权限" title={selectedUser ? `模块权限: ${selectedUser.username}` : "模块权限"} description="root 默认全开，普通用户按模块开关。" />
+              {selectedUser ? (
+                <div className="inline-action-row admin-permission-toolbar">
+                  {!permissionsEditing && selectedUser.role !== "root" ? <span className="admin-readonly-hint">只读模式</span> : null}
+                  {selectedUser.role !== "root" ? (
+                    permissionsEditing ? (
+                      <>
+                        <button
+                          className="secondary-button compact-button"
+                          type="button"
+                          onClick={() => {
+                            setDraftPermissions(Object.fromEntries(selectedUser.permissions.map((item) => [item.module_key, item.is_enabled])));
+                            setPermissionsEditing(false);
+                          }}
+                          disabled={savingPermissions}
+                        >
+                          取消
+                        </button>
+                        <button className="primary-button compact-button" type="button" disabled={savingPermissions} onClick={() => void handleSavePermissions()}>
+                          {savingPermissions ? "保存中..." : "保存权限"}
+                        </button>
+                      </>
+                    ) : (
+                      <button className="secondary-button compact-button" type="button" onClick={() => setPermissionsEditing(true)}>
+                        修改权限
                       </button>
-                      <button className="primary-button compact-button" type="button" disabled={savingPermissions} onClick={() => void handleSavePermissions()}>
-                        {savingPermissions ? "保存中..." : "保存权限"}
-                      </button>
-                    </>
+                    )
                   ) : (
-                    <button className="secondary-button compact-button" type="button" onClick={() => setPermissionsEditing(true)}>
-                      修改权限
-                    </button>
-                  )
-                ) : (
-                  <span className="admin-readonly-hint">root 权限固定全开</span>
-                )}
-              </div>
-            ) : null}
-          </div>
-          {selectedUser ? (
-            <>
-              <div className="admin-permission-scroll">
-                <div className="admin-permission-grid">
-                  {selectedUser.permissions.map((permission) => (
-                    <label className="admin-permission-card" key={permission.module_key}>
-                      <input
-                        type="checkbox"
-                        checked={selectedUser.role === "root" ? true : Boolean(draftPermissions[permission.module_key])}
-                        disabled={selectedUser.role === "root" || !permissionsEditing}
-                        onChange={(event) => setDraftPermissions((current) => ({ ...current, [permission.module_key]: event.target.checked }))}
-                      />
-                      <div>
-                        <h4>{permission.label}</h4>
-                        <p>{permission.module_key}</p>
-                      </div>
-                    </label>
-                  ))}
+                    <span className="admin-readonly-hint">root 权限固定全开</span>
+                  )}
                 </div>
-              </div>
-            </>
-          ) : (
-            <p className="muted">暂无用户。</p>
-          )}
+              ) : null}
+            </div>
+            {selectedUser ? (
+              <>
+                <div className="admin-permission-scroll">
+                  <div className="admin-permission-grid">
+                    {selectedUser.permissions.map((permission) => (
+                      <label className="admin-permission-card" key={permission.module_key}>
+                        <input
+                          type="checkbox"
+                          checked={selectedUser.role === "root" ? true : Boolean(draftPermissions[permission.module_key])}
+                          disabled={selectedUser.role === "root" || !permissionsEditing}
+                          onChange={(event) => setDraftPermissions((current) => ({ ...current, [permission.module_key]: event.target.checked }))}
+                        />
+                        <div>
+                          <h4>{permission.label}</h4>
+                          <p>{permission.module_key}</p>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <p className="muted">暂无用户。</p>
+            )}
+          </section>
+        </div>
+      )}
+
+      {adminTab === "config" && (
+        <section className="panel compact-panel">
+          <ConfigManagement onToast={(type, message) => setToast({ type, message })} />
         </section>
-      </div>
+      )}
 
       {resetPasswordState ? (
         <div className="admin-modal-backdrop" role="presentation" onClick={() => setResetPasswordState(null)}>

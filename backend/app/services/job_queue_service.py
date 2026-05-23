@@ -144,6 +144,31 @@ class JobQueueService:
             message="任务已进入队列。",
         )
 
+    def _check_model_provider_active(self, model: str) -> None:
+        """检查模型对应的供应商是否激活"""
+        # 解析模型名称中的供应商标识
+        # 例如: gpt-image-2-closeai -> closeai
+        #       gpt-image-2-all-apiyi -> apiyi
+        #       gemini-3-pro-image-preview-apiyi -> apiyi
+        if "-closeai" in model.lower():
+            if not self.settings.is_closeai_active:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="CloseAI 密钥已停用，请在系统管理中启用。",
+                )
+        elif "-apiyi" in model.lower():
+            if not self.settings.is_apiyi_active:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="APIYI 密钥已停用，请在系统管理中启用。",
+                )
+        elif "-ttapi" in model.lower():
+            if not self.settings.is_ttapi_active:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="TTAPI 密钥已停用，请在系统管理中启用。",
+                )
+
     def get_job(self, *, job_id: str, current_user: User) -> GenerationJobStatusResponse:
         with SessionLocal() as session:
             owner_user_id = session.scalar(select(GenerationJob.user_id).where(GenerationJob.id == job_id))
@@ -241,6 +266,10 @@ class JobQueueService:
         request_payload: dict[str, Any],
         current_user: User,
     ) -> dict[str, Any]:
+        # 每次执行任务前刷新配置缓存，确保使用最新的密钥激活状态
+        from app.core.config import get_settings
+        get_settings.cache_clear()
+        
         service = AIService()
         stage_callback = lambda stage: self._handle_stage_callback(job_id, stage)
 
