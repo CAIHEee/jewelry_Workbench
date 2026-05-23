@@ -52,6 +52,7 @@ import {
   isPersistedHistoryDuplicateOfRun,
   mergeModuleHistory,
   normalizeHistoryKind,
+  type NormalizedHistoryKind,
 } from "./utils/history";
 
 export type AppView =
@@ -71,6 +72,19 @@ export type AppView =
 
 const WORKSPACE_RUNS_STORAGE_KEY_PREFIX = "flux_workspace_runs_v1";
 const MAX_STORED_WORKSPACE_RUNS = 60;
+const MODULE_HISTORY_PAGE_SIZE = 100;
+
+const moduleHistoryKindByView: Partial<Record<AppView, NormalizedHistoryKind>> = {
+  "text-to-image": "text_to_image",
+  "multi-view": "multi_view",
+  "multi-view-split": "multi_view_split",
+  "image-edit": "sketch_to_realistic",
+  "product-refine": "product_refine",
+  "gemstone-design": "gemstone_design",
+  upscale: "upscale",
+  fusion: "fusion",
+  "grayscale-relief": "grayscale_relief",
+};
 
 const viewModuleMap: Record<AppView, string | null> = {
   "ai-agent": "ai_agent",
@@ -314,6 +328,7 @@ export default function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [workspaceRuns, setWorkspaceRuns] = useState<WorkspaceRun[]>([]);
   const [persistedItems, setPersistedItems] = useState<PersistedHistoryItem[]>([]);
+  const [modulePersistedItems, setModulePersistedItems] = useState<Partial<Record<NormalizedHistoryKind, PersistedHistoryItem[]>>>({});
   const [persistedHistoryPage, setPersistedHistoryPage] = useState(1);
   const [persistedHistoryPageSize, setPersistedHistoryPageSize] = useState(12);
   const [persistedHistoryTotal, setPersistedHistoryTotal] = useState(0);
@@ -367,6 +382,13 @@ export default function App() {
   }, [activeView, currentUser]);
 
   useEffect(() => {
+    if (!currentUser) return;
+    const moduleKind = moduleHistoryKindByView[activeView];
+    if (!moduleKind) return;
+    void refreshModuleHistory(moduleKind, currentUser);
+  }, [activeView, currentUser]);
+
+  useEffect(() => {
     if (isMobile) {
       setSidebarCollapsed(false);
       return;
@@ -380,7 +402,12 @@ export default function App() {
       const user = await fetchCurrentUser();
       setCurrentUser(user);
       setActiveView(firstAvailableView(user));
-      await Promise.all([refreshPersistedHistory(user), refreshPersistedAssets(), user.role === "root" ? refreshAdminData(user) : Promise.resolve()]);
+      await Promise.all([
+        refreshPersistedHistory(user),
+        refreshModuleHistory(moduleHistoryKindByView[firstAvailableView(user)], user),
+        refreshPersistedAssets(),
+        user.role === "root" ? refreshAdminData(user) : Promise.resolve(),
+      ]);
       setAuthError(null);
     } catch {
       setCurrentUser(null);
@@ -393,8 +420,14 @@ export default function App() {
     try {
       const response = await login(username, password);
       setCurrentUser(response.user);
-      setActiveView(firstAvailableView(response.user));
-      await Promise.all([refreshPersistedHistory(response.user), refreshPersistedAssets(), response.user.role === "root" ? refreshAdminData(response.user) : Promise.resolve()]);
+      const nextView = firstAvailableView(response.user);
+      setActiveView(nextView);
+      await Promise.all([
+        refreshPersistedHistory(response.user),
+        refreshModuleHistory(moduleHistoryKindByView[nextView], response.user),
+        refreshPersistedAssets(),
+        response.user.role === "root" ? refreshAdminData(response.user) : Promise.resolve(),
+      ]);
       setAuthError(null);
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "登录失败");
@@ -409,8 +442,9 @@ export default function App() {
         display_name: payload.displayName,
       });
       setCurrentUser(response.user);
-      setActiveView(firstAvailableView(response.user));
-      await Promise.all([refreshPersistedHistory(response.user), refreshPersistedAssets()]);
+      const nextView = firstAvailableView(response.user);
+      setActiveView(nextView);
+      await Promise.all([refreshPersistedHistory(response.user), refreshModuleHistory(moduleHistoryKindByView[nextView], response.user), refreshPersistedAssets()]);
       setAuthError(null);
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "注册失败");
@@ -422,6 +456,7 @@ export default function App() {
     setCurrentUser(null);
     setWorkspaceRuns([]);
     setPersistedItems([]);
+    setModulePersistedItems({});
     setPersistedHistoryPage(1);
     setPersistedHistoryTotal(0);
     setPersistedAssets([]);
@@ -454,6 +489,18 @@ export default function App() {
       setPersistedError(null);
     } catch (error) {
       setPersistedError(error instanceof Error ? error.message : "加载持久化历史失败");
+    }
+  }
+
+  async function refreshModuleHistory(kind: NormalizedHistoryKind | undefined, user = currentUser) {
+    if (!user || !kind) return;
+    try {
+      const response = await fetchPersistedHistory(user.role === "root", 1, MODULE_HISTORY_PAGE_SIZE, kind, null);
+      const dedupedItems = dedupePersistedHistoryItems(response.items);
+      setModulePersistedItems((current) => ({ ...current, [kind]: dedupedItems }));
+      setWorkspaceRuns((current) => current.filter((run) => !dedupedItems.some((item) => isPersistedHistoryDuplicateOfRun(item, run))));
+    } catch (error) {
+      setPersistedError(error instanceof Error ? error.message : "加载模块历史失败");
     }
   }
 
@@ -586,10 +633,18 @@ export default function App() {
     const target = persistedItems.find((item) => item.id === historyId);
     await deletePersistedHistory(historyId);
     setPersistedItems((current) => current.filter((item) => item.id !== historyId));
+    setModulePersistedItems((current) => {
+      const next = { ...current };
+      for (const kind of Object.keys(next) as NormalizedHistoryKind[]) {
+        next[kind] = next[kind]?.filter((item) => item.id !== historyId);
+      }
+      return next;
+    });
     if (target) {
       setWorkspaceRuns((current) => current.filter((run) => !isPersistedHistoryDuplicateOfRun(target, run)));
     }
     await refreshPersistedHistory();
+    await refreshModuleHistory(moduleHistoryKindByView[activeView]);
     await refreshPersistedAssets();
   }
 
@@ -669,15 +724,16 @@ export default function App() {
     return titleMap[activeView];
   }, [activeView]);
 
-  const textToImageRuns = useMemo(() => mergeModuleHistory(persistedItems, workspaceRuns, "text_to_image"), [persistedItems, workspaceRuns]);
-  const fusionRuns = useMemo(() => mergeModuleHistory(persistedItems, workspaceRuns, "fusion"), [persistedItems, workspaceRuns]);
-  const imageEditRuns = useMemo(() => mergeModuleHistory(persistedItems, workspaceRuns, "sketch_to_realistic"), [persistedItems, workspaceRuns]);
-  const productRefineRuns = useMemo(() => mergeModuleHistory(persistedItems, workspaceRuns, "product_refine"), [persistedItems, workspaceRuns]);
-  const gemstoneDesignRuns = useMemo(() => mergeModuleHistory(persistedItems, workspaceRuns, "gemstone_design"), [persistedItems, workspaceRuns]);
-  const upscaleRuns = useMemo(() => mergeModuleHistory(persistedItems, workspaceRuns, "upscale"), [persistedItems, workspaceRuns]);
-  const grayscaleRuns = useMemo(() => mergeModuleHistory(persistedItems, workspaceRuns, "grayscale_relief"), [persistedItems, workspaceRuns]);
-  const multiViewRuns = useMemo(() => mergeModuleHistory(persistedItems, workspaceRuns, "multi_view"), [persistedItems, workspaceRuns]);
-  const multiViewSplitRuns = useMemo(() => mergeModuleHistory(persistedItems, workspaceRuns, "multi_view_split"), [persistedItems, workspaceRuns]);
+  const getModulePersistedItems = (kind: NormalizedHistoryKind) => modulePersistedItems[kind] ?? persistedItems;
+  const textToImageRuns = useMemo(() => mergeModuleHistory(getModulePersistedItems("text_to_image"), workspaceRuns, "text_to_image"), [modulePersistedItems, persistedItems, workspaceRuns]);
+  const fusionRuns = useMemo(() => mergeModuleHistory(getModulePersistedItems("fusion"), workspaceRuns, "fusion"), [modulePersistedItems, persistedItems, workspaceRuns]);
+  const imageEditRuns = useMemo(() => mergeModuleHistory(getModulePersistedItems("sketch_to_realistic"), workspaceRuns, "sketch_to_realistic"), [modulePersistedItems, persistedItems, workspaceRuns]);
+  const productRefineRuns = useMemo(() => mergeModuleHistory(getModulePersistedItems("product_refine"), workspaceRuns, "product_refine"), [modulePersistedItems, persistedItems, workspaceRuns]);
+  const gemstoneDesignRuns = useMemo(() => mergeModuleHistory(getModulePersistedItems("gemstone_design"), workspaceRuns, "gemstone_design"), [modulePersistedItems, persistedItems, workspaceRuns]);
+  const upscaleRuns = useMemo(() => mergeModuleHistory(getModulePersistedItems("upscale"), workspaceRuns, "upscale"), [modulePersistedItems, persistedItems, workspaceRuns]);
+  const grayscaleRuns = useMemo(() => mergeModuleHistory(getModulePersistedItems("grayscale_relief"), workspaceRuns, "grayscale_relief"), [modulePersistedItems, persistedItems, workspaceRuns]);
+  const multiViewRuns = useMemo(() => mergeModuleHistory(getModulePersistedItems("multi_view"), workspaceRuns, "multi_view"), [modulePersistedItems, persistedItems, workspaceRuns]);
+  const multiViewSplitRuns = useMemo(() => mergeModuleHistory(getModulePersistedItems("multi_view_split"), workspaceRuns, "multi_view_split"), [modulePersistedItems, persistedItems, workspaceRuns]);
 
   function recordWorkspaceRun(run: Omit<WorkspaceRun, "id" | "createdAt">) {
     setWorkspaceRuns((current) =>
@@ -728,7 +784,7 @@ export default function App() {
           <TextToImagePage onRecordRun={recordWorkspaceRun} pageRuns={textToImageRuns} onDeleteHistory={handleDeleteHistory} />
         </section>
         <section className={activeView === "multi-view" ? "view-panel active" : "view-panel hidden"}>
-          <MultiViewPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} onRefreshHistory={refreshPersistedHistory} onRefreshAssets={refreshPersistedAssets} pageRuns={multiViewRuns} onDeleteHistory={handleDeleteHistory} />
+          <MultiViewPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} onRefreshHistory={() => refreshModuleHistory("multi_view")} onRefreshAssets={refreshPersistedAssets} pageRuns={multiViewRuns} onDeleteHistory={handleDeleteHistory} />
         </section>
         <section className={activeView === "multi-view-split" ? "view-panel active" : "view-panel hidden"}>
           <MultiViewSplitPage assetItems={assetItems} onRecordRun={recordWorkspaceRun} onRefreshAssets={refreshPersistedAssets} pageRuns={multiViewSplitRuns} onDeleteHistory={handleDeleteHistory} />
