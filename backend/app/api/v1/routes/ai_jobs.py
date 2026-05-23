@@ -15,6 +15,8 @@ router = APIRouter(prefix="/ai/jobs")
 job_service = JobQueueService()
 asset_service = AssetService()
 
+REFERENCE_IMAGE_TRANSFORM_FEATURES = {"image_edit", "sketch_to_realistic"}
+
 
 def _parse_string_array_json(value: str | None, *, field_name: str) -> list[str]:
     if not value:
@@ -150,8 +152,11 @@ async def enqueue_reference_image_transform(
 ) -> GenerationJobAccepted:
     if batch_size not in {1, 2, 4}:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="生成数量只能选择 1、2 或 4。")
+    feature_key = feature.strip() or "image_edit"
+    if feature_key not in REFERENCE_IMAGE_TRANSFORM_FEATURES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported reference image transform feature.")
     return await _enqueue_reference_job(
-        feature_key="image_edit",
+        feature_key=feature_key,
         image=image,
         images=None,
         prompt=prompt,

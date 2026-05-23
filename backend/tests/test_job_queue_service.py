@@ -76,7 +76,7 @@ def test_job_error_formats_upstream_chinese_credit_message_as_balance_error() ->
     assert service._format_exception_message(error) == "当前所选 AI 服务余额不足，请前往对应中转平台充值后再试。"
 
 
-def test_reference_job_ignores_client_supplied_feature(monkeypatch) -> None:
+def test_reference_job_preserves_sketch_to_realistic_feature(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_enqueue_job(self, **kwargs):  # noqa: ANN001
@@ -96,7 +96,7 @@ def test_reference_job_ignores_client_supplied_feature(monkeypatch) -> None:
             image=None,
             prompt="生成多视图",
             model="gpt-image-2-all-apiyi",
-            feature="multi_view",
+            feature="sketch_to_realistic",
             source_image_url="local://source.png",
             source_image_name="source.png",
             negative_prompt=None,
@@ -107,6 +107,30 @@ def test_reference_job_ignores_client_supplied_feature(monkeypatch) -> None:
         )
     )
 
-    assert result["feature"] == "image_edit"
-    assert captured["feature_key"] == "image_edit"
-    assert captured["request_payload"]["metadata"]["feature"] == "image_edit"
+    assert result["feature"] == "sketch_to_realistic"
+    assert captured["feature_key"] == "sketch_to_realistic"
+    assert captured["request_payload"]["metadata"]["feature"] == "sketch_to_realistic"
+
+
+def test_reference_job_rejects_unsupported_feature() -> None:
+    try:
+        asyncio.run(
+            ai_jobs.enqueue_reference_image_transform(
+                image=None,
+                prompt="生成多视图",
+                model="gpt-image-2-all-apiyi",
+                feature="multi_view",
+                source_image_url="local://source.png",
+                source_image_name="source.png",
+                negative_prompt=None,
+                strength=0.75,
+                image_size="1K",
+                batch_size=1,
+                current_user=User(id="user-1", username="tester", role="user"),
+            )
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert exc.detail == "Unsupported reference image transform feature."
+    else:
+        raise AssertionError("Expected unsupported feature to be rejected.")

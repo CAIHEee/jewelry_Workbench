@@ -120,45 +120,41 @@ class AIService:
                     supports_reference_images=model.supports_reference_images,
                     pricing_hint=self._build_model_pricing_hint(model, platform_label),
                 )
-            )
-        
-        # 自定义供应商的模型
-        from app.services.config_service import _get_custom_groups, _parse_env_file
+                )
+
+        # 自定义供应商的 image 模型
         from app.schemas.ai import ProviderType
-        
+        from app.services.config_service import _get_custom_groups, _parse_env_file
+
         custom_groups = _get_custom_groups()
         env_data = _parse_env_file()
-        
+
         for group in custom_groups:
-            group_key = group["group_key"]
-            is_active = group.get("is_active", True)
-            
-            if not is_active:
+            if group.get("category") != "image" or not group.get("is_active", True):
                 continue
-            
-            # 解析模型配置：格式为 model_id:label,model_id:label
+
+            group_key = group["group_key"]
             models_config = env_data.get(f"CUSTOM_GROUP_{group_key.upper()}_MODELS", "")
             if not models_config:
                 continue
-            
+
             for model_pair in models_config.split(","):
                 model_pair = model_pair.strip()
                 if not model_pair:
                     continue
-                
+
                 parts = model_pair.split(":", 1)
                 model_id = parts[0].strip()
                 model_label = parts[1].strip() if len(parts) > 1 else model_id
-                
                 if not model_id:
                     continue
-                
+
                 models.append(
                     TTAPIModelDefinition(
                         id=model_id,
                         label=f"{group['label']} · {model_label}",
-                        provider=ProviderType.apiyi,  # 自定义供应商使用 apiyi provider
-                        category="image",
+                        provider=ProviderType.apiyi,
+                        category="image_generation",
                         supports_text_to_image=True,
                         supports_multi_image_fusion=True,
                         supports_reference_images=True,
@@ -662,6 +658,9 @@ class AIService:
         env_data = _parse_env_file()
         
         for group in custom_groups:
+            if group.get("category") != "image" or not group.get("is_active", True):
+                continue
+
             group_key = group["group_key"]
             models_config = env_data.get(f"CUSTOM_GROUP_{group_key.upper()}_MODELS", "")
             
@@ -685,7 +684,7 @@ class AIService:
                         id=model_id,
                         label=f"{group['label']} · {parts[1].strip() if len(parts) > 1 else model_id}",
                         provider=ProviderType.apiyi,
-                        category="image",
+                        category="image_generation",
                         upstream_model_id=upstream_info,  # 存储供应商配置信息
                         supports_text_to_image=True,
                         supports_multi_image_fusion=True,

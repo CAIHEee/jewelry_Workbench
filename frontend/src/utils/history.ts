@@ -103,6 +103,25 @@ function normalizeDisplayPrompt(kind: NormalizedHistoryKind, prompt: string): st
   return normalized || "默认多视图规则";
 }
 
+function normalizeDisplayTitle(kind: NormalizedHistoryKind, title: string): string {
+  if (kind === "sketch_to_realistic" && title.startsWith("图像编辑")) {
+    return title.replace("图像编辑", KIND_LABEL_MAP.sketch_to_realistic);
+  }
+  return title;
+}
+
+function isLegacySketchToRealisticRecord(title: string, prompt: string, metadata: Record<string, unknown> | null): boolean {
+  const metadataFeature = metadata?.feature;
+  if (metadataFeature === "sketch_to_realistic") {
+    return true;
+  }
+  if (metadataFeature && metadataFeature !== "image_edit") {
+    return false;
+  }
+
+  return title.includes("线稿转写实") || prompt.includes("线稿") || prompt.includes("写实图") || prompt.includes("写实高级珠宝产品图");
+}
+
 const KIND_LABEL_MAP: Record<NormalizedHistoryKind, string> = {
   text_to_image: "\u6587\u751f\u56fe",
   fusion: "\u591a\u56fe\u878d\u5408",
@@ -131,7 +150,6 @@ export function normalizeHistoryKind(kind: string): NormalizedHistoryKind | null
     split_multi_view: "multi_view_split",
     multi_image_fusion: "fusion",
     sketch_to_realistic: "sketch_to_realistic",
-    image_edit: "sketch_to_realistic",
     product_refine: "product_refine",
     gemstone_design: "gemstone_design",
     upscale: "upscale",
@@ -174,7 +192,7 @@ export function toModuleHistoryEntry(item: PersistedHistoryItem | WorkspaceRun):
     return {
       id: `session-${item.id}`,
       kind: normalizedKind,
-      title: item.title,
+      title: normalizeDisplayTitle(normalizedKind, item.title),
       model: item.model,
       provider: item.provider,
       status: item.status,
@@ -202,7 +220,7 @@ export function toModuleHistoryEntry(item: PersistedHistoryItem | WorkspaceRun):
     id: `persisted-${item.id}`,
     persistedId: item.id,
     kind: normalizedKind,
-    title: item.title,
+    title: normalizeDisplayTitle(normalizedKind, item.title),
     model: item.model,
     provider: item.provider,
     status: item.status,
@@ -390,6 +408,10 @@ export function resolveHistoryKind(
     hasSplitMetadata
   ) {
     return "multi_view_split";
+  }
+
+  if (kind === "image_edit" && isLegacySketchToRealisticRecord(title, prompt, metadata)) {
+    return "sketch_to_realistic";
   }
 
   return kind;

@@ -714,6 +714,21 @@ class ConfigService:
             if group.group_key == group_key:
                 return group
         raise ValueError(f"Unknown group key: {group_key}")
+
+    def get_group_secret_values(self, group_key: str) -> dict[str, str]:
+        """获取单个分组的明文值，仅供后端编辑回填使用。"""
+        group = self.get_group_raw(group_key)
+        result: dict[str, str] = {}
+        for item in group.items:
+            if item.value_raw is not None:
+                result[item.key] = item.value_raw
+            elif item.value is not None:
+                result[item.key] = item.value
+            elif item.placeholder:
+                result[item.key] = item.placeholder
+            else:
+                result[item.key] = ""
+        return result
     
     def get_active_providers(self) -> dict[str, list[str]]:
         """获取当前激活的供应商列表，按分类返回"""

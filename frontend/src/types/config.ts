@@ -21,6 +21,11 @@ export interface ConfigGroup {
   items: ConfigKeyItem[];
 }
 
+export interface ConfigGroupRaw {
+  group_key: string;
+  items: Record<string, string>;
+}
+
 export interface ConfigListResponse {
   groups: ConfigGroup[];
 }

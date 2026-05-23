@@ -20,6 +20,7 @@ from app.schemas.admin import (
     ConfigToggleResponse,
     UserPermissionUpdateRequest,
 )
+from app.schemas.admin import ConfigGroupRaw
 from app.schemas.auth import ModulePermissionItem, PasswordResetRequest
 from app.services.config_service import ConfigService
 from app.services.user_service import UserService
@@ -98,7 +99,19 @@ def list_config_keys(_: User = Depends(require_root)) -> ConfigListResponse:
 def get_config_key(group_key: str, _: User = Depends(require_root)) -> ConfigGroup:
     """获取单个密钥配置 (明文，用于编辑)"""
     try:
-        return config_service.get_group_raw(group_key)
+        return config_service.get_group(group_key)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+
+@router.get("/admin/config/keys/{group_key}/raw", response_model=ConfigGroupRaw)
+def get_config_key_raw(group_key: str, _: User = Depends(require_root)) -> ConfigGroupRaw:
+    """获取单个密钥配置明文值，仅用于编辑回填。"""
+    try:
+        return ConfigGroupRaw(
+            group_key=group_key,
+            items=config_service.get_group_secret_values(group_key),
+        )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 

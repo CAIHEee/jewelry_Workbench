@@ -126,6 +126,11 @@ class ConfigGroup(BaseModel):
     items: list[ConfigKeyItem]  # 配置项列表
 
 
+class ConfigGroupRaw(BaseModel):
+    group_key: str
+    items: dict[str, str]
+
+
 class ConfigListResponse(BaseModel):
     """密钥列表响应"""
     groups: list[ConfigGroup]

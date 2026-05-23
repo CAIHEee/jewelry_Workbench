@@ -76,11 +76,7 @@ export function ConfigManagement({ onToast }: ConfigManagementProps) {
   async function handleEdit(groupKey: string) {
     try {
       const raw = await fetchConfigKeyRaw(groupKey);
-      const items: Record<string, string> = {};
-      raw.items.forEach((item) => {
-        items[item.key] = item.value_raw ?? item.value ?? item.placeholder ?? "";
-      });
-      setEditing({ groupKey, items, isDirty: false });
+      setEditing({ groupKey, items: raw.items, isDirty: false });
     } catch (err) {
       onToast?.("error", err instanceof Error ? err.message : "加载配置失败");
     }

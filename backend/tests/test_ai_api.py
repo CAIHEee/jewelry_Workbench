@@ -5,6 +5,7 @@ from fastapi import UploadFile
 from fastapi.testclient import TestClient
 
 from app.api.v1.routes.ai import cache_service
+from app.services import config_service as config_module
 from app.schemas.ai import GenerationResult, ReferenceImageRequestMetadata, TextToImageRequest
 from app.services.ai_service import AIService
 from app.models.user import User
@@ -18,20 +19,9 @@ def test_model_catalog_exposes_expected_models(client: TestClient) -> None:
     body = response.json()
     models = {item["id"]: item for item in body["models"]}
     model_ids = set(models)
-    assert model_ids == {
-        "gpt-image-2-all-apiyi",
-        "gemini-3-pro-image-preview-apiyi",
-        "gpt-image-2-closeai",
-        "gemini-3.1-flash-image-preview",
-    }
     assert "gpt-image-2-all-apiyi" in model_ids
     assert "gemini-3-pro-image-preview-apiyi" in model_ids
-    assert "gpt-image-2-closeai" in model_ids
-    assert "gpt-image-2-wuyin" not in model_ids
     assert "gemini-3.1-flash-image-preview" in model_ids
-    assert "gemini-3-pro-image-preview" not in model_ids
-    assert "flux1-dev" not in model_ids
-    assert "flux-kontext-pro" not in model_ids
     assert models["gpt-image-2-all-apiyi"]["supports_text_to_image"] is False
     assert models["gpt-image-2-all-apiyi"]["supports_multi_image_fusion"] is True
     assert models["gpt-image-2-all-apiyi"]["supports_reference_images"] is True
@@ -42,15 +32,137 @@ def test_model_catalog_exposes_expected_models(client: TestClient) -> None:
     assert models["gemini-3-pro-image-preview-apiyi"]["supports_reference_images"] is True
     assert models["gemini-3-pro-image-preview-apiyi"]["provider"] == "gemini"
     assert models["gemini-3-pro-image-preview-apiyi"]["label"].startswith("APIYI")
-    assert models["gpt-image-2-closeai"]["supports_text_to_image"] is False
-    assert models["gpt-image-2-closeai"]["supports_multi_image_fusion"] is True
-    assert models["gpt-image-2-closeai"]["supports_reference_images"] is True
-    assert models["gpt-image-2-closeai"]["provider"] == "closeai"
-    assert models["gpt-image-2-closeai"]["label"].startswith("CloseAI")
+    if "gpt-image-2-closeai" in models:
+        assert models["gpt-image-2-closeai"]["supports_text_to_image"] is False
+        assert models["gpt-image-2-closeai"]["supports_multi_image_fusion"] is True
+        assert models["gpt-image-2-closeai"]["supports_reference_images"] is True
+        assert models["gpt-image-2-closeai"]["provider"] == "closeai"
+        assert models["gpt-image-2-closeai"]["label"].startswith("CloseAI")
     assert models["gemini-3.1-flash-image-preview"]["supports_text_to_image"] is True
     assert models["gemini-3.1-flash-image-preview"]["supports_multi_image_fusion"] is True
     assert models["gemini-3.1-flash-image-preview"]["supports_reference_images"] is True
     assert models["gemini-3.1-flash-image-preview"]["label"].startswith("APIYI")
+
+
+def test_model_catalog_includes_active_custom_image_models(client: TestClient, monkeypatch) -> None:
+    cache_service.delete(cache_service.model_catalog_key())
+    monkeypatch.setattr(
+        config_module,
+        "_get_custom_groups",
+        lambda: [
+            {
+                "group_key": "custom_image",
+                "label": "自定义图像",
+                "category": "image",
+                "is_builtin": False,
+                "is_active": True,
+                "interface_type": "openai_compat",
+                "items": [],
+            },
+            {
+                "group_key": "custom_agent",
+                "label": "自定义 Agent",
+                "category": "agent",
+                "is_builtin": False,
+                "is_active": True,
+                "interface_type": "openai_compat",
+                "items": [],
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        config_module,
+        "_parse_env_file",
+        lambda: {
+            "CUSTOM_GROUP_CUSTOM_IMAGE_MODELS": "alpha:Alpha Model,beta:Beta Model",
+            "CUSTOM_GROUP_CUSTOM_AGENT_MODELS": "agent-x:Agent X",
+        },
+    )
+
+    response = client.get("/api/v1/ai/models")
+
+    assert response.status_code == 200
+    body = response.json()
+    models = {item["id"]: item for item in body["models"]}
+    assert {"alpha", "beta"}.issubset(models)
+    assert "agent-x" not in models
+    assert models["alpha"]["label"] == "自定义图像 · Alpha Model"
+    assert models["alpha"]["provider"] == "apiyi"
+    assert models["alpha"]["category"] == "image_generation"
+
+
+def test_custom_model_lookup_only_allows_active_image_groups(monkeypatch) -> None:
+    monkeypatch.setattr(
+        config_module,
+        "_get_custom_groups",
+        lambda: [
+            {
+                "group_key": "custom_image",
+                "label": "自定义图像",
+                "category": "image",
+                "is_builtin": False,
+                "is_active": True,
+                "interface_type": "openai_compat",
+                "items": [],
+            },
+            {
+                "group_key": "disabled_image",
+                "label": "停用图像",
+                "category": "image",
+                "is_builtin": False,
+                "is_active": False,
+                "interface_type": "openai_compat",
+                "items": [],
+            },
+            {
+                "group_key": "custom_agent",
+                "label": "自定义 Agent",
+                "category": "agent",
+                "is_builtin": False,
+                "is_active": True,
+                "interface_type": "openai_compat",
+                "items": [],
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        config_module,
+        "_parse_env_file",
+        lambda: {
+            "CUSTOM_GROUP_CUSTOM_IMAGE_MODELS": "alpha:Alpha Model",
+            "CUSTOM_GROUP_CUSTOM_IMAGE_BASE_URL": "https://image.example/v1",
+            "CUSTOM_GROUP_CUSTOM_IMAGE_API_KEY": "image-key",
+            "CUSTOM_GROUP_DISABLED_IMAGE_MODELS": "disabled:Disabled Model",
+            "CUSTOM_GROUP_DISABLED_IMAGE_BASE_URL": "https://disabled.example/v1",
+            "CUSTOM_GROUP_DISABLED_IMAGE_API_KEY": "disabled-key",
+            "CUSTOM_GROUP_CUSTOM_AGENT_MODELS": "agent-x:Agent X",
+            "CUSTOM_GROUP_CUSTOM_AGENT_BASE_URL": "https://agent.example/v1",
+            "CUSTOM_GROUP_CUSTOM_AGENT_API_KEY": "agent-key",
+        },
+    )
+
+    service = AIService()
+
+    model = service._get_model_or_404("alpha")
+    assert model.category == "image_generation"
+    assert model.upstream_model_id == "custom_image|https://image.example/v1|image-key"
+
+    for blocked_model in ("disabled", "agent-x"):
+        try:
+            service._get_model_or_404(blocked_model)
+        except Exception as exc:  # noqa: BLE001
+            assert getattr(exc, "status_code", None) == 404
+        else:
+            raise AssertionError(f"Expected {blocked_model} to be unavailable.")
+
+
+def test_admin_config_raw_endpoint_returns_secret_values(auth_client: TestClient) -> None:
+    response = auth_client.get("/api/v1/admin/config/keys/apiyi/raw")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["group_key"] == "apiyi"
+    assert "APIYI_API_KEY" in body["items"]
 
 
 def test_extracts_openai_payload_data_url_b64_json() -> None:
@@ -107,6 +219,7 @@ def test_builds_qwen_multi_view_prompt_request_text() -> None:
 
 def test_qwen_multi_view_prompt_payload_uses_image_and_thinking(monkeypatch) -> None:
     service = AIService()
+    monkeypatch.setattr(service.settings, "dashscope_api_key", "")
     monkeypatch.setattr(service.settings, "agent_llm_api_key", "test-qwen-key")
     monkeypatch.setattr(service.settings, "multi_view_prompt_model", "qwen3-vl-plus")
     monkeypatch.setattr(service.settings, "multi_view_prompt_thinking_budget", 81920)

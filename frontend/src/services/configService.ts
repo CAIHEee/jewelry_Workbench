@@ -1,6 +1,7 @@
 import type {
   ConfigGroup,
   ConfigGroupCreate,
+  ConfigGroupRaw,
   ConfigGroupUpdate,
   ConfigListResponse,
   ConfigToggleResponse,
@@ -18,8 +19,8 @@ export async function fetchConfigKeys(): Promise<ConfigListResponse> {
   return res.json();
 }
 
-export async function fetchConfigKeyRaw(groupKey: string): Promise<ConfigGroup> {
-  const res = await fetch(`${API_BASE}/config/keys/${encodeURIComponent(groupKey)}`, {
+export async function fetchConfigKeyRaw(groupKey: string): Promise<ConfigGroupRaw> {
+  const res = await fetch(`${API_BASE}/config/keys/${encodeURIComponent(groupKey)}/raw`, {
     credentials: "include",
   });
   if (!res.ok) {
