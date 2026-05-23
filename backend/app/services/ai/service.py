@@ -1250,6 +1250,16 @@ class AIService:
         files: list[UploadFile],
         size: str = "auto",
     ) -> dict[str, Any]:
+        custom_config = self._parse_custom_model_config(model)
+        if custom_config:
+            base_url = custom_config["base_url"]
+            api_key = custom_config["api_key"]
+            model_id = model.id
+        else:
+            base_url = self.settings.apiyi_openai_base_url
+            api_key = self._require_apiyi_api_key()
+            model_id = model.upstream_model_id
+
         multipart_files = [await self._build_named_multipart_file(file, field_name="image") for file in files]
         if not multipart_files:
             raise HTTPException(
@@ -1257,11 +1267,11 @@ class AIService:
                 detail="At least one image is required for APIYI image edit.",
             )
         return await self._post_multipart_with_bearer_base_url(
-            base_url=self.settings.apiyi_openai_base_url,
+            base_url=base_url,
             path="/images/edits",
-            api_key=self._require_apiyi_api_key(),
+            api_key=api_key,
             data={
-                "model": model.upstream_model_id,
+                "model": model_id,
                 "prompt": prompt,
                 "size": size,
                 "response_format": "url",

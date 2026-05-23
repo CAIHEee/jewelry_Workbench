@@ -33,11 +33,6 @@ const progressPhases = [
   { at: 95, label: "拼合四宫格结果..." },
 ];
 const preferredMultiViewModelId = "gpt-image-2-all-apiyi";
-const allowedMultiViewModelIds = new Set([
-  "gpt-image-2-all-apiyi",
-  "gemini-3-pro-image-preview-apiyi",
-  "gpt-image-2-closeai",
-]);
 const generationCountOptions = [1, 2, 4] as const;
 type GenerationCount = (typeof generationCountOptions)[number];
 const jobProgressLabels = {
@@ -51,7 +46,7 @@ const jobProgressLabels = {
 };
 
 export function MultiViewPage({ assetItems, onRecordRun: _onRecordRun, onRefreshHistory, onRefreshAssets, pageRuns, onDeleteHistory }: MultiViewPageProps) {
-  const { models, error: modelError, defaultModelId } = useModelCatalog((model) => allowedMultiViewModelIds.has(model.id));
+  const { models, error: modelError, defaultModelId } = useModelCatalog((model) => model.supports_reference_images && model.supports_multi_image_fusion);
   const multiViewDefaultModelId = useMemo(
     () => models.find((item) => item.id === preferredMultiViewModelId)?.id ?? defaultModelId,
     [defaultModelId, models],

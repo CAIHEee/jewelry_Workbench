@@ -310,6 +310,65 @@ def test_apiyi_vip_edit_payload_uses_multipart_images(monkeypatch) -> None:
     assert files[2][1][0] == "source.png"
 
 
+def test_custom_image_model_edit_payload_uses_custom_provider_config(monkeypatch) -> None:
+    service = AIService()
+    monkeypatch.setattr(
+        config_module,
+        "_get_custom_groups",
+        lambda: [
+            {
+                "group_key": "custom_image",
+                "label": "自定义图像",
+                "category": "image",
+                "is_builtin": False,
+                "is_active": True,
+                "interface_type": "openai_compat",
+                "items": [],
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        config_module,
+        "_parse_env_file",
+        lambda: {
+            "CUSTOM_GROUP_CUSTOM_IMAGE_MODELS": "alpha:Alpha Model",
+            "CUSTOM_GROUP_CUSTOM_IMAGE_BASE_URL": "https://custom.example/v1",
+            "CUSTOM_GROUP_CUSTOM_IMAGE_API_KEY": "custom-key",
+        },
+    )
+
+    captured: dict[str, object] = {}
+
+    async def fake_post_multipart_with_bearer_base_url(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+        return {"data": [{"url": "https://example.com/result.png"}]}
+
+    monkeypatch.setattr(service, "_post_multipart_with_bearer_base_url", fake_post_multipart_with_bearer_base_url)
+
+    async def run_request() -> None:
+        files = [UploadFile(filename="source.png", file=BytesIO(b"source"))]
+        try:
+            await service._post_apiyi_gpt_image2_vip_edit(
+                model=service._get_model_or_404("alpha"),
+                prompt="Qwen 反推后的自定义多视图提示词",
+                files=files,
+                size="auto",
+            )
+        finally:
+            for item in files:
+                item.file.close()
+
+    asyncio.run(run_request())
+
+    assert captured["base_url"] == "https://custom.example/v1"
+    assert captured["path"] == "/images/edits"
+    assert captured["api_key"] == "custom-key"
+    data = captured["data"]
+    assert isinstance(data, dict)
+    assert data["model"] == "alpha"
+    assert data["prompt"] == "Qwen 反推后的自定义多视图提示词"
+
+
 def test_closeai_gpt_image2_edit_payload_uses_closeai_config(monkeypatch) -> None:
     service = AIService()
     monkeypatch.setattr(service, "_require_closeai_api_key", lambda: "test-closeai-key")
