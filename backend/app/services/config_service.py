@@ -447,13 +447,99 @@ class ConfigService:
         return ConfigListResponse(groups=groups)
     
     def update_group(self, group_key: str, items: dict[str, str], is_active: bool | None = None) -> ConfigGroup:
-        """更新密钥分组"""
+        """更新密钥分组（支持内置和自定义分组）"""
+        env_data = _parse_env_file()
+        
+        # 先检查是否是自定义分组
+        prefix = f"CUSTOM_GROUP_{group_key.upper()}_"
+        is_custom = any(key.startswith(prefix) for key in env_data)
+        
+        if is_custom:
+            # 自定义分组：直接更新 .env 中的配置
+            for key, value in items.items():
+                if key.startswith(prefix):
+                    if value.strip():
+                        env_data[key] = value.strip()
+                    elif key in env_data:
+                        del env_data[key]
+            
+            # 处理激活/停用
+            if is_active is not None:
+                active_key = f"{prefix}ACTIVE"
+                env_data[active_key] = "true" if is_active else "false"
+            
+            _write_env_file(env_data)
+            get_settings.cache_clear()
+            
+            # 重新构建返回的 ConfigGroup
+            label = env_data.get(f"{prefix}LABEL", group_key)
+            category = env_data.get(f"{prefix}CATEGORY", "image")
+            base_url = env_data.get(f"{prefix}BASE_URL", "")
+            api_key = env_data.get(f"{prefix}API_KEY", "")
+            models = env_data.get(f"{prefix}MODELS", "")
+            timeout = env_data.get(f"{prefix}TIMEOUT", "600")
+            is_active = env_data.get(f"{prefix}ACTIVE", "true").lower() == "true"
+            
+            items_list = [
+                ConfigKeyItem(
+                    key=f"{prefix}BASE_URL",
+                    label="Base URL",
+                    value=_mask_value(base_url, is_secret=False),
+                    value_raw=base_url,
+                    placeholder=base_url,
+                    type="text",
+                    required=True,
+                    is_secret=False,
+                ),
+                ConfigKeyItem(
+                    key=f"{prefix}API_KEY",
+                    label="API Key",
+                    value=_mask_value(api_key, is_secret=True),
+                    value_raw=api_key,
+                    placeholder=api_key,
+                    type="password",
+                    required=True,
+                    is_secret=True,
+                ),
+                ConfigKeyItem(
+                    key=f"{prefix}MODELS",
+                    label="模型配置",
+                    value=models,
+                    value_raw=models,
+                    placeholder="gpt-4o:GPT-4o,flux-pro:Flux Pro",
+                    type="text",
+                    required=False,
+                    is_secret=False,
+                ),
+                ConfigKeyItem(
+                    key=f"{prefix}TIMEOUT",
+                    label="超时时间 (秒)",
+                    value=timeout,
+                    value_raw=timeout,
+                    placeholder=timeout,
+                    type="number",
+                    required=False,
+                    is_secret=False,
+                ),
+            ]
+            
+            return ConfigGroup(
+                group_key=group_key,
+                label=label,
+                category=category,
+                description="自定义供应商 (OpenAI 兼容接口)",
+                is_active=is_active,
+                interface_type="openai_compat",
+                items=items_list,
+            )
+        
+        # 内置分组：使用原有逻辑
         group_def = None
         for t in BUILTIN_GROUP_TEMPLATES:
             if t["group_key"] == group_key:
                 group_def = deepcopy(t)
                 break
-        
+
         if group_def is None:
             raise ValueError(f"Unknown group key: {group_key}")
         
@@ -515,16 +601,16 @@ class ConfigService:
         """创建自定义供应商配置（OpenAI 兼容接口）"""
         if _is_builtin_group(group_key):
             raise ValueError(f"组名 '{group_key}' 已被内置分组占用。")
-        
+
         # 验证 group_key 格式
         if not re.match(r'^[a-z][a-z0-9_]*$', group_key):
             raise ValueError("组名只能包含小写字母、数字和下划线，且必须以字母开头。")
-        
+
         prefix = f"CUSTOM_GROUP_{group_key.upper()}_"
-        
+
         # 读取现有配置
         env_data = _parse_env_file()
-        
+
         # 写入新配置
         env_data[f"{prefix}LABEL"] = label
         env_data[f"{prefix}CATEGORY"] = category
@@ -534,11 +620,64 @@ class ConfigService:
         env_data[f"{prefix}TIMEOUT"] = str(timeout)
         env_data[f"{prefix}ACTIVE"] = "true"
         env_data[f"{prefix}INTERFACE_TYPE"] = "openai_compat"  # 明确标注接口类型
-        
+
         _write_env_file(env_data)
         get_settings.cache_clear()
-        
-        return self.get_config_list().groups[[g.group_key for g in self.get_config_list().groups].index(group_key)]
+
+        # 重新解析 .env 文件，确保自定义分组被正确加载
+        # 直接构建返回的 ConfigGroup，避免依赖 get_config_list 的异步解析
+        items = [
+            ConfigKeyItem(
+                key=f"{prefix}BASE_URL",
+                label="Base URL",
+                value=base_url,
+                value_raw=base_url,
+                placeholder=base_url,
+                type="text",
+                required=True,
+                is_secret=False,
+            ),
+            ConfigKeyItem(
+                key=f"{prefix}API_KEY",
+                label="API Key",
+                value=_mask_value(api_key, is_secret=True),
+                value_raw=api_key,
+                placeholder=api_key,
+                type="password",
+                required=True,
+                is_secret=True,
+            ),
+            ConfigKeyItem(
+                key=f"{prefix}MODELS",
+                label="模型配置",
+                value=models,
+                value_raw=models,
+                placeholder="gpt-4o:GPT-4o,flux-pro:Flux Pro",
+                type="text",
+                required=False,
+                is_secret=False,
+            ),
+            ConfigKeyItem(
+                key=f"{prefix}TIMEOUT",
+                label="超时时间 (秒)",
+                value=str(timeout),
+                value_raw=str(timeout),
+                placeholder=str(timeout),
+                type="number",
+                required=False,
+                is_secret=False,
+            ),
+        ]
+
+        return ConfigGroup(
+            group_key=group_key,
+            label=label,
+            category=category,
+            description="自定义供应商 (OpenAI 兼容接口)",
+            is_active=True,
+            interface_type="openai_compat",
+            items=items,
+        )
     
     def delete_group(self, group_key: str) -> None:
         """删除自定义供应商配置"""

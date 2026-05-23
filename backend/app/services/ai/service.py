@@ -99,9 +99,11 @@ class AIService:
         from app.core.config import get_settings as _get_settings
         _get_settings.cache_clear()
         current_settings = _get_settings()
-        
+
         platform_label = self._upstream_platform_label()
         models = []
+        
+        # 内置供应商的模型
         for model in MODEL_CATALOG.values():
             # 根据密钥激活状态过滤模型
             provider = model.provider.value if hasattr(model.provider, 'value') else str(model.provider)
@@ -119,6 +121,51 @@ class AIService:
                     pricing_hint=self._build_model_pricing_hint(model, platform_label),
                 )
             )
+        
+        # 自定义供应商的模型
+        from app.services.config_service import _get_custom_groups, _parse_env_file
+        from app.schemas.ai import ProviderType
+        
+        custom_groups = _get_custom_groups()
+        env_data = _parse_env_file()
+        
+        for group in custom_groups:
+            group_key = group["group_key"]
+            is_active = group.get("is_active", True)
+            
+            if not is_active:
+                continue
+            
+            # 解析模型配置：格式为 model_id:label,model_id:label
+            models_config = env_data.get(f"CUSTOM_GROUP_{group_key.upper()}_MODELS", "")
+            if not models_config:
+                continue
+            
+            for model_pair in models_config.split(","):
+                model_pair = model_pair.strip()
+                if not model_pair:
+                    continue
+                
+                parts = model_pair.split(":", 1)
+                model_id = parts[0].strip()
+                model_label = parts[1].strip() if len(parts) > 1 else model_id
+                
+                if not model_id:
+                    continue
+                
+                models.append(
+                    TTAPIModelDefinition(
+                        id=model_id,
+                        label=f"{group['label']} · {model_label}",
+                        provider=ProviderType.apiyi,  # 自定义供应商使用 apiyi provider
+                        category="image",
+                        supports_text_to_image=True,
+                        supports_multi_image_fusion=True,
+                        supports_reference_images=True,
+                        pricing_hint=f"OpenAI compatible model via {group['label']}",
+                    )
+                )
+        
         return ModelCatalogResponse(models=models)
 
     def _is_provider_active_for_model(self, model_id: str, provider: str, settings: Any = None) -> bool:
@@ -602,13 +649,79 @@ class AIService:
             _request_user.reset(context_token)
 
     def _get_model_or_404(self, model_id: str) -> ImageModelConfig:
+        # 先在内置模型目录中查找
         model = MODEL_CATALOG.get(model_id)
-        if model is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Unknown model: {model_id}",
-            )
-        return model
+        if model is not None:
+            return model
+        
+        # 然后在自定义供应商的模型配置中查找
+        from app.services.config_service import _get_custom_groups, _parse_env_file
+        from app.schemas.ai import ProviderType
+        
+        custom_groups = _get_custom_groups()
+        env_data = _parse_env_file()
+        
+        for group in custom_groups:
+            group_key = group["group_key"]
+            models_config = env_data.get(f"CUSTOM_GROUP_{group_key.upper()}_MODELS", "")
+            
+            for model_pair in models_config.split(","):
+                model_pair = model_pair.strip()
+                if not model_pair:
+                    continue
+                
+                parts = model_pair.split(":", 1)
+                custom_model_id = parts[0].strip()
+                
+                if custom_model_id == model_id:
+                    # 找到匹配的自定义模型，动态创建 ImageModelConfig
+                    # 将供应商配置存储在 upstream_model_id 中（格式：group_key|base_url|api_key）
+                    group_base_url = env_data.get(f"CUSTOM_GROUP_{group_key.upper()}_BASE_URL", "")
+                    group_api_key = env_data.get(f"CUSTOM_GROUP_{group_key.upper()}_API_KEY", "")
+                    # 使用 | 作为分隔符，因为 base_url 中可能包含 :
+                    upstream_info = f"{group_key}|{group_base_url}|{group_api_key}"
+                    
+                    return ImageModelConfig(
+                        id=model_id,
+                        label=f"{group['label']} · {parts[1].strip() if len(parts) > 1 else model_id}",
+                        provider=ProviderType.apiyi,
+                        category="image",
+                        upstream_model_id=upstream_info,  # 存储供应商配置信息
+                        supports_text_to_image=True,
+                        supports_multi_image_fusion=True,
+                        supports_reference_images=True,
+                        pricing_hint=f"OpenAI compatible model via {group['label']}",
+                    )
+        
+        # 如果都找不到，返回 404 错误
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Unknown model: {model_id}",
+        )
+    
+    def _parse_custom_model_config(self, model: ImageModelConfig) -> dict[str, str] | None:
+        """解析自定义模型配置，如果是自定义供应商的模型，返回配置信息"""
+        upstream_info = model.upstream_model_id
+        
+        # 检查是否是自定义供应商配置（格式：group_key|base_url|api_key）
+        if "|" not in upstream_info:
+            return None
+        
+        parts = upstream_info.split("|", 2)
+        if len(parts) != 3:
+            return None
+        
+        group_key, base_url, api_key = parts
+        
+        # 验证是否是自定义供应商（内置供应商的 group_key 不会包含下划线）
+        if group_key in ("apiyi", "closeai", "ttapi", "gemini"):
+            return None
+        
+        return {
+            "group_key": group_key,
+            "base_url": base_url,
+            "api_key": api_key,
+        }
 
     def _require_apiyi_api_key(self) -> str:
         if not self.settings.apiyi_api_key:
@@ -784,13 +897,26 @@ class AIService:
         request: TextToImageRequest,
         model: ImageModelConfig,
     ) -> GenerationResult:
-        api_key = self._require_apiyi_api_key()
+        # 解析模型配置，检查是否是自定义供应商
+        custom_config = self._parse_custom_model_config(model)
+        
+        if custom_config:
+            # 使用自定义供应商配置
+            base_url = custom_config["base_url"]
+            api_key = custom_config["api_key"]
+            model_id = model.id  # 使用原始模型 ID
+        else:
+            # 使用内置 APIYI 配置
+            api_key = self._require_apiyi_api_key()
+            base_url = self.settings.apiyi_openai_base_url
+            model_id = self._map_apiyi_model_id(model.id)
+        
         data = await self._post_json_with_bearer(
-            base_url=self.settings.apiyi_openai_base_url,
+            base_url=base_url,
             path="/images/generations",
             api_key=api_key,
             payload={
-                "model": self._map_apiyi_model_id(model.id),
+                "model": model_id,
                 "prompt": request.prompt,
                 "n": 1,
                 "size": request.size,

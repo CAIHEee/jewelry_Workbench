@@ -146,7 +146,7 @@ export function ConfigManagement({ onToast }: ConfigManagementProps) {
 
       onToast?.("success", "供应商已添加");
       setAdding(null);
-      void loadConfig();
+      await loadConfig();  // 使用 await 确保立即刷新
       
       // 触发配置变化事件
       window.dispatchEvent(new CustomEvent("configChanged"));
