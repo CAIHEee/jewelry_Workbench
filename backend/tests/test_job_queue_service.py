@@ -103,13 +103,49 @@ def test_reference_job_preserves_sketch_to_realistic_feature(monkeypatch) -> Non
             strength=0.75,
             image_size="1K",
             batch_size=1,
-            current_user=User(id="user-1", username="tester", role="user"),
+            current_user=User(id="user-1", username="tester", role="root"),
         )
     )
 
     assert result["feature"] == "sketch_to_realistic"
     assert captured["feature_key"] == "sketch_to_realistic"
     assert captured["request_payload"]["metadata"]["feature"] == "sketch_to_realistic"
+
+
+def test_reference_job_preserves_grayscale_relief_feature(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_enqueue_job(self, **kwargs):  # noqa: ANN001
+        captured.update(kwargs)
+        return {
+            "job_id": "job-grayscale",
+            "status": "queued",
+            "feature": kwargs["feature_key"],
+            "message": "queued",
+        }
+
+    monkeypatch.setattr(ai_jobs.job_service, "ensure_can_enqueue", lambda *args, **kwargs: None)
+    monkeypatch.setattr(ai_jobs.job_service, "enqueue_job", fake_enqueue_job.__get__(ai_jobs.job_service))
+
+    result = asyncio.run(
+        ai_jobs.enqueue_reference_image_transform(
+            image=None,
+            prompt="转灰度图",
+            model="gpt-image-2-all-apiyi",
+            feature="grayscale_relief",
+            source_image_url="local://source.png",
+            source_image_name="source.png",
+            negative_prompt=None,
+            strength=0.75,
+            image_size="1K",
+            batch_size=1,
+            current_user=User(id="user-1", username="tester", role="root"),
+        )
+    )
+
+    assert result["feature"] == "grayscale_relief"
+    assert captured["feature_key"] == "grayscale_relief"
+    assert captured["request_payload"]["metadata"]["feature"] == "grayscale_relief"
 
 
 def test_reference_job_rejects_unsupported_feature() -> None:
