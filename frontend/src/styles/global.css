@@ -5721,66 +5721,27 @@ button.agent-generation-tile.agent-generation-clickable,
   padding: 14px 16px;
 }
 
-.compact-file-list {
-  gap: 10px;
-}
-
-.fusion-primary-chip {
-  padding: 12px 14px;
-  border-radius: 16px;
-  background:
-    radial-gradient(circle at top left, rgba(242, 202, 72, 0.06), transparent 42%),
-    linear-gradient(180deg, rgba(29, 32, 39, 0.96), rgba(21, 24, 30, 0.96));
-  border-color: rgba(255, 255, 255, 0.08);
-}
-
-.fusion-primary-chip-name {
+.fusion-reference-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   min-width: 0;
-  color: #eef2fa;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.fusion-primary-chip-button {
-  min-width: 88px;
-  min-height: 34px;
-  padding: 0 14px;
+.fusion-reference-label {
+  min-width: 44px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  background: linear-gradient(180deg, rgba(77, 81, 90, 0.62), rgba(54, 58, 66, 0.62));
-  color: #edf1f7;
+  border: 1px solid rgba(242, 202, 72, 0.24);
+  background: rgba(242, 202, 72, 0.08);
+  color: #f2ca48;
   font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.01em;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  transition:
-    transform 160ms ease,
-    border-color 160ms ease,
-    background 160ms ease,
-    color 160ms ease,
-    box-shadow 160ms ease;
-}
-
-.fusion-primary-chip-button:hover {
-  transform: translateY(-1px);
-  border-color: rgba(242, 202, 72, 0.28);
-  background: linear-gradient(180deg, rgba(92, 97, 107, 0.74), rgba(61, 66, 76, 0.74));
-  color: #fff8e1;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 10px 18px rgba(0, 0, 0, 0.18);
-}
-
-.fusion-primary-chip .chip-active {
-  border-color: rgba(242, 202, 72, 0.88);
-  background:
-    linear-gradient(180deg, #f2ca48 0%, #d8a837 100%);
-  color: #15120a;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.28),
-    0 10px 20px rgba(180, 128, 34, 0.18);
+  white-space: nowrap;
 }
 
 .image-edit-form .source-picker-card,
@@ -6347,7 +6308,6 @@ button.agent-generation-tile.agent-generation-clickable,
   }
 
   .template-trigger-button,
-  .fusion-primary-chip-button,
   .compact-button {
     letter-spacing: 0;
   }
@@ -6392,8 +6352,7 @@ button.agent-generation-tile.agent-generation-clickable,
 
   .compact-button,
   .inline-action-row .secondary-button,
-  .template-trigger-button,
-  .fusion-primary-chip-button {
+  .template-trigger-button {
     min-height: 24px;
     padding: 0 7px;
     font-size: 9px;
@@ -6417,7 +6376,6 @@ button.agent-generation-tile.agent-generation-clickable,
   .filter-chip,
   .asset-primary-nav-button,
   .source-mode-button,
-  .fusion-primary-chip-button,
   .drawer-summary,
   .split-preview-tab,
   .asset-modal-scope-button,
@@ -6447,7 +6405,6 @@ button.agent-generation-tile.agent-generation-clickable,
   .filter-chip:active,
   .asset-primary-nav-button:active,
   .source-mode-button:active,
-  .fusion-primary-chip-button:active,
   .drawer-summary:active,
   .split-preview-tab:active:not(:disabled),
   .asset-modal-scope-button:active,
@@ -6485,8 +6442,7 @@ button.agent-generation-tile.agent-generation-clickable,
 
   .filter-chip:active,
   .asset-primary-nav-button:active,
-  .source-mode-button:active,
-  .fusion-primary-chip-button:active {
+  .source-mode-button:active {
     border-color: rgba(242, 202, 72, 0.42);
     box-shadow:
       inset 0 0 0 1px rgba(242, 202, 72, 0.08),
@@ -7824,7 +7780,6 @@ input:disabled {
   .filter-chip,
   .asset-primary-nav-button,
   .source-mode-button,
-  .fusion-primary-chip-button,
   .drawer-summary,
   .split-preview-tab,
   .asset-modal-scope-button,
@@ -7856,7 +7811,6 @@ input:disabled {
   .filter-chip:active,
   .asset-primary-nav-button:active,
   .source-mode-button:active,
-  .fusion-primary-chip-button:active,
   .drawer-summary:active,
   .split-preview-tab:active:not(:disabled),
   .asset-modal-scope-button:active,
@@ -7900,7 +7854,6 @@ input:disabled {
   .filter-chip:active,
   .asset-primary-nav-button:active,
   .source-mode-button:active,
-  .fusion-primary-chip-button:active,
   .asset-modal-scope-button:active,
   .split-preview-tab:active:not(:disabled) {
     border-color: rgba(242, 202, 72, 0.42);
@@ -9599,7 +9552,6 @@ input:disabled {
     border-radius: 7px;
   }
 
-  .fusion-primary-chip-button,
   .mini-preview-link,
   .split-result-card .secondary-button.compact-button,
   .split-preview-tab {

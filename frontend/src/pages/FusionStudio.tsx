@@ -261,18 +261,11 @@ export function FusionStudio({ onRecordRun, assetItems, onRefreshAssets, pageRun
             />
 
             {selectedInputItems.length > 0 ? (
-              <div className="file-list compact-file-list">
+              <div className="fusion-reference-labels" aria-label="参考图顺序">
                 {selectedInputItems.map((item, index) => (
-                  <div className="file-chip fusion-primary-chip" key={item.key}>
-                    <span className="fusion-primary-chip-name">{item.name}</span>
-                    <button
-                      type="button"
-                      className={primaryImageIndex === index ? "fusion-primary-chip-button chip-active" : "fusion-primary-chip-button"}
-                      onClick={() => setPrimaryImageIndex(index)}
-                    >
-                      {primaryImageIndex === index ? "主图" : "设为主图"}
-                    </button>
-                  </div>
+                  <span className="fusion-reference-label" key={item.key} title={item.name}>
+                    图{index + 1}
+                  </span>
                 ))}
               </div>
             ) : null}
