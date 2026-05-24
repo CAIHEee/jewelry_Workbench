@@ -309,7 +309,7 @@ def test_design_mode_short_answer_fills_pending_slot(auth_client: TestClient) ->
 
     first = agent_client.post(
         f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
-        json={"content": "我想设计一款玉石吊坠", "attachments": []},
+        json={"content": "我想设计一款冰种蛋面玉石吊坠", "attachments": []},
     )
     assert first.status_code == 200
     assert "金属材质" in first.text
@@ -704,6 +704,116 @@ def test_design_updates_jade_shape_without_polluting_concept() -> None:
     assert "supplement" not in brief
     summary = service._format_design_brief_for_review(brief, None)
     assert "- 翡翠形制：三角形" in summary
+
+
+def test_text_only_jade_gemstone_requires_shape_before_ready(auth_client: TestClient, monkeypatch) -> None:
+    async def fake_design_llm(self, **kwargs):  # noqa: ANN001
+        return {
+            "design_brief": {
+                "category": "戒指",
+                "gemstone": "翡翠满绿单颗主石",
+                "metal": "18K金",
+                "style": "几何",
+                "craft": "爪镶",
+                "scene": "日常佩戴",
+                "concept": "农夫山泉",
+                "supplement": "几何设计",
+            },
+            "missing_slots": [],
+            "pending_design_slot": "",
+            "should_generate": False,
+            "latest_design_mode": "text_to_image",
+            "reply": "信息已经足够生成首版设计图。",
+            "options": [],
+        }
+
+    monkeypatch.setattr(AgentService, "_call_design_brief_llm", fake_design_llm)
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "design"})
+    conversation_id = created.json()["id"]
+
+    response = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={"content": "补充说明，几何设计", "attachments": []},
+    )
+
+    assert response.status_code == 200
+    assert "event: action_card" not in response.text
+    detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
+    state = detail["conversation"]["state"]
+    assert state["pending_design_slot"] == "gemstone"
+    assert "翡翠形制" in state["pending_design_question"] or "形制" in state["pending_design_question"]
+    assert state["design_brief"]["concept"] == "农夫山泉"
+    assert state["design_brief"]["supplement"] == "补充说明，几何设计"
+    summary = AgentService()._format_design_brief_for_review(state["design_brief"], None)
+    assert "- 翡翠形制：待补充" in summary
+
+
+def test_design_freeform_supplement_does_not_overwrite_concept() -> None:
+    service = AgentService()
+    brief = {"concept": "农夫山泉"}
+
+    service._merge_design_content_into_brief(brief, "补充说明，几何设计")
+
+    assert brief["concept"] == "农夫山泉"
+    assert brief["supplement"] == "补充说明，几何设计"
+
+
+def test_gemstone_image_design_does_not_require_text_jade_shape(auth_client: TestClient, monkeypatch) -> None:
+    async def fake_analyze(self, attachments, content, *, current_user):  # noqa: ANN001, ARG001
+        return {
+            "count": 1,
+            "shape": "水滴形",
+            "color": "满绿",
+            "transparency": "冰种",
+            "setting_direction": "适合吊坠纵向镶嵌",
+            "source": "vision",
+        }
+
+    async def fake_design_llm(self, **kwargs):  # noqa: ANN001
+        brief = dict(kwargs.get("brief") or {})
+        brief.update(
+            {
+                "category": "吊坠",
+                "gemstone": "裸石图片",
+                "metal": "18K白金",
+                "style": "现代东方",
+                "craft": "包镶",
+                "scene": "日常通勤",
+                "supplement": "几何设计",
+            }
+        )
+        return {
+            "design_brief": brief,
+            "missing_slots": [],
+            "pending_design_slot": "",
+            "should_generate": False,
+            "latest_design_mode": "gemstone_design",
+            "reply": "信息已经足够生成首版设计图。",
+            "options": [],
+        }
+
+    monkeypatch.setattr(AgentService, "_analyze_stones_or_fallback", fake_analyze)
+    monkeypatch.setattr(AgentService, "_call_design_brief_llm", fake_design_llm)
+    agent_client = _agent_client(auth_client)
+    created = agent_client.post("/agent-api/v1/conversations", json={"mode": "design"})
+    conversation_id = created.json()["id"]
+
+    response = agent_client.post(
+        f"/agent-api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "用这颗裸石做几何设计",
+            "attachments": [{"name": "stone.png", "storage_url": "https://example.com/stone.png"}],
+        },
+    )
+
+    assert response.status_code == 200
+    detail = agent_client.get(f"/agent-api/v1/conversations/{conversation_id}").json()
+    state = detail["conversation"]["state"]
+    assert state["latest_design_mode"] == "gemstone_design"
+    assert state["pending_design_slot"] is None
+    assert state["pending_design_option_source"] == "ready"
+    assert state["stone_analysis"]["shape"] == "水滴形"
 
 
 def test_jade_gemstone_options_prefer_section_six_knowledge_for_necklace() -> None:

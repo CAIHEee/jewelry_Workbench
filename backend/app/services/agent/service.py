@@ -2095,7 +2095,6 @@ class AgentService:
         if gemstone_update:
             current_gemstone = str(brief.get("gemstone") or "").strip()
             brief["gemstone"] = self._merge_gemstone_attribute_update(current_gemstone, gemstone_update)
-            return
         revision_intents = self._extract_design_revision_intents(stripped)
         if revision_intents["updates"] or revision_intents["clears"] or revision_intents["autofill_slots"]:
             for slot, value in revision_intents["updates"].items():
@@ -2140,16 +2139,18 @@ class AgentService:
             "这块玉",
             "这块裸石",
         )
+        has_structured_slot = any([category, style, metal, gemstone, craft, scene, gemstone_update])
+        if not has_structured_slot and not answered_pending_slot:
+            previous = str(brief.get("supplement") or "")
+            brief["supplement"] = f"{previous}\n{stripped}".strip()
         if (
             not answered_pending_slot
             and not self._is_short_ambiguous_design_answer(stripped)
             and lowered not in {"整理设计理念", "生成首版设计图", "优化提示词"}
             and not any(marker in stripped for marker in upload_reference_markers)
+            and self._looks_like_design_concept(stripped)
         ):
             brief["concept"] = stripped
-            if not any([category, style, metal, gemstone, craft, scene]):
-                previous = str(brief.get("supplement") or "")
-                brief["supplement"] = f"{previous}\n{stripped}".strip()
 
     def _extract_gemstone_phrase(self, text: str) -> str | None:
         normalized = text.strip()
@@ -2209,6 +2210,25 @@ class AgentService:
         if "随形" in text and "蛋面" in text:
             return "随形蛋面"
         return fallback
+
+    def _looks_like_design_concept(self, text: str) -> bool:
+        normalized = text.strip()
+        concept_markers = (
+            "设计理念",
+            "理念",
+            "主题",
+            "寓意",
+            "灵感",
+            "表达",
+            "象征",
+            "取意",
+            "故事",
+        )
+        if any(marker in normalized for marker in concept_markers):
+            return True
+        if len(normalized) <= 12 and any(marker in normalized for marker in ("山泉", "山水", "花", "月", "云", "海", "竹", "莲", "凤", "龙")):
+            return True
+        return False
 
     def _normalize_design_slot_value(self, slot: str, value: str) -> str:
         stripped = value.strip()
@@ -2733,6 +2753,8 @@ class AgentService:
             if not gemstone_value or self._is_placeholder_design_value(gemstone_value):
                 return False
             jade_profile = self._extract_jade_brief_profile(brief)
+            if self._is_jade_gemstone_context(gemstone_value):
+                return bool(jade_profile.get("shape"))
             return bool(
                 gemstone_value
                 and (
@@ -2744,6 +2766,14 @@ class AgentService:
                 )
             )
         return bool(str(raw_value or "").strip())
+
+    def _is_jade_gemstone_context(self, gemstone_value: str) -> bool:
+        normalized = gemstone_value.strip()
+        jade_markers = ("翡翠", "玉", "玉石", "翠", "白冰", "飘花", "满绿", "阳绿", "晴水", "蓝水", "墨翠", "紫罗兰")
+        non_jade_markers = ("钻石", "红宝石", "蓝宝石", "祖母绿", "珍珠", "彩宝", "碧玺", "欧泊")
+        if any(marker in normalized for marker in non_jade_markers):
+            return False
+        return any(marker in normalized for marker in jade_markers) or not normalized
 
     def _is_placeholder_design_value(self, value: object) -> bool:
         if value in (None, "", [], {}):
@@ -2796,7 +2826,9 @@ class AgentService:
             "直接生成",
         ]
         for phrase in phrases:
-            cleaned = cleaned.replace(phrase, " ")
+            if cleaned.strip().replace(" ", "") == phrase:
+                cleaned = ""
+                break
         cleaned = re.sub(r"\s+", " ", cleaned)
         return cleaned.strip()
 
@@ -2977,21 +3009,11 @@ class AgentService:
         return "\n".join(f"- {label}：{value}" for label, value in fields)
 
     def _extract_jade_brief_profile(self, brief: dict[str, Any]) -> dict[str, str]:
-        gemstone_text = " ".join(
-            str(item)
-            for item in [
-                brief.get("gemstone"),
-                brief.get("concept"),
-                brief.get("supplement"),
-            ]
-            if item
-        )
+        gemstone_text = str(brief.get("gemstone") or "")
         normalized = gemstone_text.replace("，", " ").replace("。", " ").replace("；", " ")
         profile = self._extract_jade_profile_from_text(normalized)
         if not profile["water"] and "翡翠" in normalized:
             profile["water"] = "翡翠主石，种水待细化"
-        if not profile["shape"] and str(brief.get("category") or "").strip() in {"项链", "吊坠"}:
-            profile["shape"] = "吊坠主石形制待细化"
         return profile
 
     def _extract_jade_profile_from_text(self, text: str) -> dict[str, str]:
