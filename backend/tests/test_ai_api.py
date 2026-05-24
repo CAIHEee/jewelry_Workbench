@@ -22,7 +22,7 @@ def test_model_catalog_exposes_expected_models(client: TestClient) -> None:
     assert "gpt-image-2-all-apiyi" in model_ids
     assert "gemini-3-pro-image-preview-apiyi" in model_ids
     assert "gemini-3.1-flash-image-preview" in model_ids
-    assert models["gpt-image-2-all-apiyi"]["supports_text_to_image"] is False
+    assert models["gpt-image-2-all-apiyi"]["supports_text_to_image"] is True
     assert models["gpt-image-2-all-apiyi"]["supports_multi_image_fusion"] is True
     assert models["gpt-image-2-all-apiyi"]["supports_reference_images"] is True
     assert models["gpt-image-2-all-apiyi"]["provider"] == "apiyi"
@@ -33,7 +33,7 @@ def test_model_catalog_exposes_expected_models(client: TestClient) -> None:
     assert models["gemini-3-pro-image-preview-apiyi"]["provider"] == "gemini"
     assert models["gemini-3-pro-image-preview-apiyi"]["label"].startswith("APIYI")
     if "gpt-image-2-closeai" in models:
-        assert models["gpt-image-2-closeai"]["supports_text_to_image"] is False
+        assert models["gpt-image-2-closeai"]["supports_text_to_image"] is True
         assert models["gpt-image-2-closeai"]["supports_multi_image_fusion"] is True
         assert models["gpt-image-2-closeai"]["supports_reference_images"] is True
         assert models["gpt-image-2-closeai"]["provider"] == "closeai"
@@ -308,6 +308,50 @@ def test_apiyi_vip_edit_payload_uses_multipart_images(monkeypatch) -> None:
     assert files[0][1][0] == "example-a.png"
     assert files[1][1][0] == "example-b.png"
     assert files[2][1][0] == "source.png"
+
+
+def test_apiyi_gpt_image2_text_to_image_uses_upstream_model(monkeypatch) -> None:
+    service = AIService()
+    monkeypatch.setattr(service, "_require_apiyi_api_key", lambda: "test-key")
+
+    captured: dict[str, object] = {}
+
+    async def fake_post_json_with_bearer(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+        return {"data": [{"url": "https://example.com/result.png"}]}
+
+    async def fake_store_generated_asset(**kwargs):  # noqa: ANN003
+        return {
+            "access_url": "/api/v1/assets/content?storage_url=local://generated.png",
+            "storage_url": "local://generated.png",
+            "metadata": {},
+        }
+
+    monkeypatch.setattr(service, "_post_json_with_bearer", fake_post_json_with_bearer)
+    monkeypatch.setattr(service, "_store_generated_asset", fake_store_generated_asset)
+    monkeypatch.setattr(service, "_persist_history", lambda **kwargs: None)
+
+    async def run_request() -> None:
+        await service._generate_with_openai_image_apiyi(
+            request=TextToImageRequest(
+                prompt="金色珠宝产品图",
+                model="gpt-image-2-all-apiyi",
+                aspect_ratio="1:1",
+                size="1024x1024",
+                image_size="1K",
+                thinking_level="High",
+            ),
+            model=service._get_model_or_404("gpt-image-2-all-apiyi"),
+        )
+
+    asyncio.run(run_request())
+
+    assert captured["base_url"] == service.settings.apiyi_openai_base_url
+    assert captured["path"] == "/images/generations"
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert payload["model"] == "gpt-image-2-vip"
+    assert payload["prompt"] == "金色珠宝产品图"
 
 
 def test_custom_image_model_edit_payload_uses_custom_provider_config(monkeypatch) -> None:

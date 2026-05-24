@@ -908,7 +908,7 @@ class AIService:
             # 使用内置 APIYI 配置
             api_key = self._require_apiyi_api_key()
             base_url = self.settings.apiyi_openai_base_url
-            model_id = self._map_apiyi_model_id(model.id)
+            model_id = self._map_apiyi_model_id(model)
         
         data = await self._post_json_with_bearer(
             base_url=base_url,
@@ -1160,7 +1160,7 @@ class AIService:
             path="/images/edits",
             api_key=api_key,
             data={
-                "model": self._map_apiyi_model_id(model.id),
+                "model": self._map_apiyi_model_id(model),
                 "prompt": self._build_fusion_prompt(metadata),
             },
             files=multipart_files,
@@ -1188,7 +1188,7 @@ class AIService:
             path="/images/edits",
             api_key=api_key,
             data={
-                "model": self._map_apiyi_model_id(model.id),
+                "model": self._map_apiyi_model_id(model),
                 "prompt": metadata.prompt,
                 "size": "2048x2048" if metadata.image_size == "2K" else "1024x1024",
             },
@@ -1729,8 +1729,11 @@ class AIService:
                     return None, None, url
         return None, None, None
 
-    def _map_apiyi_model_id(self, model_id: str) -> str:
-        return model_id
+    def _map_apiyi_model_id(self, model: ImageModelConfig) -> str:
+        custom_config = self._parse_custom_model_config(model)
+        if custom_config:
+            return model.id
+        return model.upstream_model_id
 
     def _map_apiyi_vip_edit_size(self, image_size: str | None) -> str:
         if image_size in {"2K", "2048x2048"}:
