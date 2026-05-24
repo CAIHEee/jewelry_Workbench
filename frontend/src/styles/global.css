@@ -1121,6 +1121,14 @@ select {
   font-size: 12px;
 }
 
+.local-markup-status span {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .local-markup-status strong {
   color: #f2ca48;
 }
@@ -5541,6 +5549,16 @@ button.agent-generation-tile.agent-generation-clickable,
   align-content: start;
 }
 
+.image-edit-form > *,
+.source-mini-preview-panel,
+.source-preview-grid,
+.source-preview-card,
+.local-markup-card,
+.local-markup-head,
+.local-markup-status {
+  min-width: 0;
+}
+
 .parameter-scroll-panel {
   display: grid;
   grid-auto-rows: max-content;
@@ -6005,6 +6023,10 @@ button.agent-generation-tile.agent-generation-clickable,
   .dashboard-grid.result-heavy.single-result-layout,
   .dashboard-grid.result-heavy.image-edit-layout {
     grid-template-columns: minmax(300px, 0.72fr) minmax(0, 1.28fr);
+  }
+
+  .dashboard-grid.result-heavy.image-edit-layout {
+    grid-template-columns: minmax(380px, 0.72fr) minmax(0, 1.28fr);
   }
 
   .preview-history-layout {
