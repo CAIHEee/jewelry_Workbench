@@ -11,6 +11,71 @@ from app.services.ai_service import AIService
 from app.models.user import User
 
 
+def test_runtime_config_file_overrides_env_file(tmp_path, monkeypatch) -> None:
+    runtime_file = tmp_path / "runtime" / "secrets.env"
+    runtime_file.parent.mkdir()
+    runtime_file.write_text("APIYI_API_KEY=runtime-key\n", encoding="utf-8")
+
+    monkeypatch.setattr(config_module, "ENV_FILE_PATH", tmp_path / ".env")
+    monkeypatch.setattr(config_module, "get_runtime_config_file_path", lambda: runtime_file)
+    config_module.ENV_FILE_PATH.write_text("APIYI_API_KEY=local-key\n", encoding="utf-8")
+
+    assert config_module._get_current_env()["APIYI_API_KEY"] == "runtime-key"
+
+
+def test_admin_config_writes_runtime_config_file(tmp_path, monkeypatch) -> None:
+    runtime_file = tmp_path / "runtime" / "secrets.env"
+    local_env = tmp_path / ".env"
+
+    monkeypatch.setattr(config_module, "ENV_FILE_PATH", local_env)
+    monkeypatch.setattr(config_module, "get_runtime_config_file_path", lambda: runtime_file)
+
+    group = config_module.ConfigService().update_group(
+        "apiyi",
+        {"APIYI_API_KEY": "runtime-new-key", "APIYI_BASE_URL": "https://runtime.example"},
+        is_active=True,
+    )
+
+    assert group.group_key == "apiyi"
+    runtime_text = runtime_file.read_text(encoding="utf-8")
+    assert "APIYI_API_KEY=runtime-new-key" in runtime_text
+    assert "APIYI_BASE_URL=https://runtime.example" in runtime_text
+    assert "APIYI_ACTIVE=true" in runtime_text
+    assert not local_env.exists() or "APIYI_API_KEY" not in local_env.read_text(encoding="utf-8")
+
+
+def test_ai_service_reloads_runtime_settings_before_generation(monkeypatch) -> None:
+    service = AIService()
+    monkeypatch.setattr(service.settings, "apiyi_api_key", "")
+
+    class RuntimeSettings:
+        apiyi_api_key = "runtime-apiyi-key"
+
+    monkeypatch.setattr("app.services.ai.service.get_settings", lambda: RuntimeSettings())
+    monkeypatch.setattr("app.services.ai.service.get_settings.cache_clear", lambda: None, raising=False)
+
+    service._reload_runtime_settings()
+
+    assert service._require_apiyi_api_key() == "runtime-apiyi-key"
+
+
+def test_get_settings_prefers_runtime_config_file(tmp_path, monkeypatch) -> None:
+    import app.core.config as core_config
+
+    runtime_file = tmp_path / "runtime" / "secrets.env"
+    runtime_file.parent.mkdir()
+    runtime_file.write_text("APIYI_API_KEY=runtime-key\n", encoding="utf-8")
+
+    monkeypatch.setenv("APIYI_API_KEY", "env-key")
+    monkeypatch.setattr(core_config, "RUNTIME_CONFIG_FILE_PATH", runtime_file)
+    core_config.get_settings.cache_clear()
+
+    try:
+        assert core_config.get_settings().apiyi_api_key == "runtime-key"
+    finally:
+        core_config.get_settings.cache_clear()
+
+
 def test_model_catalog_exposes_expected_models(client: TestClient) -> None:
     cache_service.delete(cache_service.model_catalog_key())
     response = client.get("/api/v1/ai/models")
@@ -154,6 +219,38 @@ def test_custom_model_lookup_only_allows_active_image_groups(monkeypatch) -> Non
             assert getattr(exc, "status_code", None) == 404
         else:
             raise AssertionError(f"Expected {blocked_model} to be unavailable.")
+
+
+def test_custom_model_lookup_uses_current_runtime_env(monkeypatch) -> None:
+    monkeypatch.setattr(
+        config_module,
+        "_get_custom_groups",
+        lambda: [
+            {
+                "group_key": "runtime_image",
+                "label": "运行时图像",
+                "category": "image",
+                "is_builtin": False,
+                "is_active": True,
+                "interface_type": "openai_compat",
+                "items": [],
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        config_module,
+        "_get_current_env",
+        lambda: {
+            "CUSTOM_GROUP_RUNTIME_IMAGE_MODELS": "runtime-alpha:Runtime Alpha",
+            "CUSTOM_GROUP_RUNTIME_IMAGE_BASE_URL": "https://runtime.example/v1",
+            "CUSTOM_GROUP_RUNTIME_IMAGE_API_KEY": "runtime-key",
+        },
+    )
+
+    service = AIService()
+    model = service._get_model_or_404("runtime-alpha")
+
+    assert model.upstream_model_id == "runtime_image|https://runtime.example/v1|runtime-key"
 
 
 def test_admin_config_raw_endpoint_returns_secret_values(auth_client: TestClient) -> None:

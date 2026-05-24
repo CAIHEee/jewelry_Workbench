@@ -1,3 +1,5 @@
+import os
+import re
 from pathlib import Path
 from functools import lru_cache
 
@@ -5,6 +7,70 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_FILE_PATH = Path(__file__).resolve().parents[2] / ".env"
+RUNTIME_CONFIG_FILE_PATH = Path(os.environ["RUNTIME_CONFIG_FILE"]).expanduser() if os.environ.get("RUNTIME_CONFIG_FILE") else None
+
+
+RUNTIME_CONFIG_KEYS = frozenset(
+    {
+        "AI_DEFAULT_PROVIDER",
+        "AI_UPSTREAM_PLATFORM",
+        "AI_MAX_FUSION_IMAGES",
+        "APIYI_API_KEY",
+        "APIYI_ACTIVE",
+        "APIYI_BASE_URL",
+        "APIYI_OPENAI_BASE_URL",
+        "APIYI_GEMINI_BASE_URL",
+        "APIYI_TIMEOUT_SECONDS",
+        "CLOSEAI_API_KEY",
+        "CLOSEAI_ACTIVE",
+        "CLOSEAI_BASE_URL",
+        "CLOSEAI_TIMEOUT_SECONDS",
+        "TTAPI_API_KEY",
+        "TTAPI_ACTIVE",
+        "TTAPI_OPENAI_BASE_URL",
+        "TTAPI_TIMEOUT_SECONDS",
+        "TTAPI_POLL_INTERVAL_SECONDS",
+        "TTAPI_POLL_ATTEMPTS",
+        "AGENT_LLM_BASE_URL",
+        "AGENT_LLM_API_KEY",
+        "AGENT_LLM_MODEL",
+        "AGENT_LLM_TIMEOUT_SECONDS",
+        "AGENT_LLM_STRICT_TOOLS",
+        "DASHSCOPE_API_KEY",
+        "MULTI_VIEW_PROMPT_MODEL",
+        "MULTI_VIEW_PROMPT_THINKING_BUDGET",
+        "AGENT_VISION_LLM_BASE_URL",
+        "AGENT_VISION_LLM_API_KEY",
+        "AGENT_VISION_LLM_MODEL",
+    }
+)
+
+
+def is_runtime_config_key(key: str) -> bool:
+    return key in RUNTIME_CONFIG_KEYS or key.startswith("CUSTOM_GROUP_")
+
+
+def get_runtime_config_file_path() -> Path | None:
+    return RUNTIME_CONFIG_FILE_PATH
+
+
+def _parse_runtime_config_file() -> dict[str, str]:
+    runtime_path = get_runtime_config_file_path()
+    if runtime_path is None or not runtime_path.exists():
+        return {}
+
+    result: dict[str, str] = {}
+    with open(runtime_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            match = re.match(r"^([A-Z_][A-Z0-9_]*)=(.*)$", line)
+            if match:
+                key = match.group(1)
+                if is_runtime_config_key(key):
+                    result[key] = match.group(2).strip().strip('"').strip("'")
+    return result
 
 
 class Settings(BaseSettings):
@@ -142,4 +208,4 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return Settings(**_parse_runtime_config_file())

@@ -57,6 +57,10 @@ class AIService:
         self.local_asset_root = self.storage_dir / "local_assets"
         self.local_asset_root.mkdir(parents=True, exist_ok=True)
 
+    def _reload_runtime_settings(self) -> None:
+        get_settings.cache_clear()
+        self.settings = get_settings()
+
     def get_feature_catalog(self) -> GenerationFeatureCatalog:
         platform_label = self._upstream_platform_label()
         return GenerationFeatureCatalog(
@@ -99,6 +103,7 @@ class AIService:
         from app.core.config import get_settings as _get_settings
         _get_settings.cache_clear()
         current_settings = _get_settings()
+        self.settings = current_settings
 
         platform_label = self._upstream_platform_label()
         models = []
@@ -124,10 +129,10 @@ class AIService:
 
         # 自定义供应商的 image 模型
         from app.schemas.ai import ProviderType
-        from app.services.config_service import _get_custom_groups, _parse_env_file
+        from app.services.config_service import _get_current_env, _get_custom_groups
 
         custom_groups = _get_custom_groups()
-        env_data = _parse_env_file()
+        env_data = _get_current_env()
 
         for group in custom_groups:
             if group.get("category") != "image" or not group.get("is_active", True):
@@ -191,6 +196,7 @@ class AIService:
         current_user: User,
         stage_callback: Callable[[str], None] | None = None,
     ) -> GenerationResult:
+        self._reload_runtime_settings()
         context_token = _request_user.set(current_user)
         stage_token = _job_stage_callback.set(stage_callback)
         model = self._get_model_or_404(request.model)
@@ -225,6 +231,7 @@ class AIService:
         source_image_urls: list[str] | None = None,
         stage_callback: Callable[[str], None] | None = None,
     ) -> FusionJobAccepted:
+        self._reload_runtime_settings()
         context_token = _request_user.set(current_user)
         stage_token = _job_stage_callback.set(stage_callback)
         model = self._get_model_or_404(metadata.model)
@@ -339,6 +346,7 @@ class AIService:
         source_image_urls: list[str] | None = None,
         stage_callback: Callable[[str], None] | None = None,
     ) -> GenerationResult:
+        self._reload_runtime_settings()
         context_token = _request_user.set(current_user)
         stage_token = _job_stage_callback.set(stage_callback)
         model = self._get_model_or_404(metadata.model)
@@ -461,6 +469,7 @@ class AIService:
         source_image_urls: list[str] | None = None,
         stage_callback: Callable[[str], None] | None = None,
     ) -> GenerationResult:
+        self._reload_runtime_settings()
         if metadata.feature != "multi_view":
             metadata = metadata.model_copy(update={"feature": "multi_view"})
         model = self._get_model_or_404(metadata.model)
@@ -507,6 +516,7 @@ class AIService:
         stage_callback: Callable[[str], None] | None = None,
         ) -> GenerationResult:
         """使用 Qwen3-VL 反推提示词，再用当前 image2 模型生成多视图。"""
+        self._reload_runtime_settings()
         context_token = _request_user.set(current_user)
         stage_token = _job_stage_callback.set(stage_callback)
         model = self._get_model_or_404(metadata.model)
@@ -651,11 +661,11 @@ class AIService:
             return model
         
         # 然后在自定义供应商的模型配置中查找
-        from app.services.config_service import _get_custom_groups, _parse_env_file
+        from app.services.config_service import _get_current_env, _get_custom_groups
         from app.schemas.ai import ProviderType
         
         custom_groups = _get_custom_groups()
-        env_data = _parse_env_file()
+        env_data = _get_current_env()
         
         for group in custom_groups:
             if group.get("category") != "image" or not group.get("is_active", True):

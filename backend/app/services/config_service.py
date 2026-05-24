@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from copy import deepcopy
 
-from app.core.config import ENV_FILE_PATH, get_settings
+from app.core.config import ENV_FILE_PATH, get_runtime_config_file_path, get_settings, is_runtime_config_key
 from app.schemas.admin import (
     CATEGORY_LABELS,
     CATEGORY_SINGLETON,
@@ -129,13 +129,13 @@ def _mask_value(value: str | None, is_secret: bool = True) -> str | None:
     return value
 
 
-def _parse_env_file() -> dict[str, str]:
+def _parse_env_file(path: Path = ENV_FILE_PATH) -> dict[str, str]:
     """解析 .env 文件"""
     result = {}
-    if not ENV_FILE_PATH.exists():
+    if not path.exists():
         return result
 
-    with open(ENV_FILE_PATH, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
@@ -149,9 +149,29 @@ def _parse_env_file() -> dict[str, str]:
     return result
 
 
+def _split_runtime_env_data(env_data: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+    runtime_data = {key: value for key, value in env_data.items() if is_runtime_config_key(key)}
+    local_data = {key: value for key, value in env_data.items() if not is_runtime_config_key(key)}
+    return runtime_data, local_data
+
+
+def _load_runtime_config_data() -> dict[str, str]:
+    runtime_path = get_runtime_config_file_path()
+    if runtime_path is None:
+        return {}
+    return _parse_env_file(runtime_path)
+
+
+def _merged_env_data_for_runtime() -> dict[str, str]:
+    env_data = _parse_env_file()
+    runtime_data = _load_runtime_config_data()
+    env_data.update(runtime_data)
+    return env_data
+
+
 def _get_custom_groups() -> list[dict[str, Any]]:
     """获取自定义分组（从 .env 中解析）"""
-    env_data = _parse_env_file()
+    env_data = _merged_env_data_for_runtime()
     custom_groups = []
     
     # 查找所有 CUSTOM_GROUP_* 标记
@@ -203,11 +223,11 @@ def _get_all_groups() -> list[dict[str, Any]]:
     return BUILTIN_GROUP_TEMPLATES + _get_custom_groups()
 
 
-def _write_env_file(env_data: dict[str, str]) -> None:
+def _write_env_file(env_data: dict[str, str], path: Path = ENV_FILE_PATH) -> None:
     """写入 .env 文件，支持删除不存在的 key"""
     existing_lines = []
-    if ENV_FILE_PATH.exists():
-        with open(ENV_FILE_PATH, "r", encoding="utf-8") as f:
+    if path.exists():
+        with open(path, "r", encoding="utf-8") as f:
             existing_lines = f.readlines()
     
     # 收集所有在 env_data 中的 key
@@ -235,8 +255,25 @@ def _write_env_file(env_data: dict[str, str]) -> None:
         if key not in written_keys:
             new_lines.append(f"{key}={value}\n")
     
-    with open(ENV_FILE_PATH, "w", encoding="utf-8") as f:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
         f.writelines(new_lines)
+
+
+def _write_config_data(env_data: dict[str, str]) -> None:
+    runtime_path = get_runtime_config_file_path()
+    if runtime_path is None:
+        _write_env_file(env_data)
+        return
+
+    runtime_data, local_data = _split_runtime_env_data(env_data)
+    existing_runtime_data = _load_runtime_config_data()
+    for key in list(existing_runtime_data):
+        if key not in runtime_data:
+            del existing_runtime_data[key]
+    existing_runtime_data.update(runtime_data)
+    _write_env_file(existing_runtime_data, runtime_path)
+    _write_env_file(local_data, ENV_FILE_PATH)
 
 
 def _create_custom_group(group_key: str, label: str, category: str, base_url: str, api_key: str, model: str, timeout: int) -> dict[str, Any]:
@@ -273,7 +310,7 @@ def _delete_custom_group(group_key: str) -> None:
         raise ValueError(f"内置分组 '{group_key}' 不允许删除，请使用停用功能。")
     
     # 检查是否存在
-    env_data = _parse_env_file()
+    env_data = _merged_env_data_for_runtime()
     prefix = f"CUSTOM_GROUP_{group_key.upper()}_"
     exists = any(key.startswith(prefix) for key in env_data)
     if not exists:
@@ -284,14 +321,14 @@ def _delete_custom_group(group_key: str) -> None:
     for key in keys_to_delete:
         del env_data[key]
     
-    _write_env_file(env_data)
+    _write_config_data(env_data)
     get_settings.cache_clear()
 
 
 def _get_current_env() -> dict[str, str]:
     """获取当前环境变量值（优先从文件读取，其次从进程环境）"""
     # 优先从 .env 文件读取最新值
-    result = _parse_env_file()
+    result = _merged_env_data_for_runtime()
     
     # 如果文件中没有，再从进程环境变量读取
     settings = get_settings()
@@ -333,7 +370,7 @@ def _is_group_active(group_def: dict[str, Any], env_data: dict[str, str]) -> boo
 
 def _get_all_group_keys() -> list[str]:
     """获取所有分组的 key（包括内置和自定义）"""
-    env_data = _parse_env_file()
+    env_data = _merged_env_data_for_runtime()
     keys = []
     
     # 内置分组
@@ -448,7 +485,7 @@ class ConfigService:
     
     def update_group(self, group_key: str, items: dict[str, str], is_active: bool | None = None) -> ConfigGroup:
         """更新密钥分组（支持内置和自定义分组）"""
-        env_data = _parse_env_file()
+        env_data = _merged_env_data_for_runtime()
         
         # 先检查是否是自定义分组
         prefix = f"CUSTOM_GROUP_{group_key.upper()}_"
@@ -468,7 +505,7 @@ class ConfigService:
                 active_key = f"{prefix}ACTIVE"
                 env_data[active_key] = "true" if is_active else "false"
             
-            _write_env_file(env_data)
+            _write_config_data(env_data)
             get_settings.cache_clear()
             
             # 重新构建返回的 ConfigGroup
@@ -543,7 +580,7 @@ class ConfigService:
         if group_def is None:
             raise ValueError(f"Unknown group key: {group_key}")
         
-        env_data = _parse_env_file()
+        env_data = _merged_env_data_for_runtime()
         
         # 更新配置项
         for key, value in items.items():
@@ -592,7 +629,7 @@ class ConfigService:
                     active_key = f"{group_key.upper()}_ACTIVE"
                     env_data[active_key] = "false"
         
-        _write_env_file(env_data)
+        _write_config_data(env_data)
         get_settings.cache_clear()
         
         return self.get_config_list().groups[[g.group_key for g in self.get_config_list().groups].index(group_key)]
@@ -609,7 +646,7 @@ class ConfigService:
         prefix = f"CUSTOM_GROUP_{group_key.upper()}_"
 
         # 读取现有配置
-        env_data = _parse_env_file()
+        env_data = _merged_env_data_for_runtime()
 
         # 写入新配置
         env_data[f"{prefix}LABEL"] = label
@@ -621,7 +658,7 @@ class ConfigService:
         env_data[f"{prefix}ACTIVE"] = "true"
         env_data[f"{prefix}INTERFACE_TYPE"] = "openai_compat"  # 明确标注接口类型
 
-        _write_env_file(env_data)
+        _write_config_data(env_data)
         get_settings.cache_clear()
 
         # 重新解析 .env 文件，确保自定义分组被正确加载
@@ -685,7 +722,7 @@ class ConfigService:
             raise ValueError(f"内置分组 '{group_key}' 不允许删除，请使用停用功能。")
         
         # 检查是否存在
-        env_data = _parse_env_file()
+        env_data = _merged_env_data_for_runtime()
         prefix = f"CUSTOM_GROUP_{group_key.upper()}_"
         exists = any(key.startswith(prefix) for key in env_data)
         if not exists:
@@ -696,7 +733,7 @@ class ConfigService:
         for key in keys_to_delete:
             del env_data[key]
         
-        _write_env_file(env_data)
+        _write_config_data(env_data)
         get_settings.cache_clear()
     
     def get_group(self, group_key: str) -> ConfigGroup:

@@ -65,6 +65,10 @@ class AgentService:
         self.asset_service = AssetService()
         self.job_service = JobQueueService()
 
+    def _reload_runtime_settings(self) -> None:
+        get_settings.cache_clear()
+        self.settings = get_settings()
+
     def list_conversations(self, *, current_user: User) -> list[AgentConversationResponse]:
         with SessionLocal() as session:
             records = session.execute(
@@ -175,6 +179,7 @@ class AgentService:
         content: str,
         attachments: list[AgentAssetRef],
     ) -> tuple[str, AgentActionResponse | None, AgentMemoryProposal | None]:
+        self._reload_runtime_settings()
         conversation = self._get_conversation(conversation_id, current_user=current_user)
         self._ensure_conversation_active(conversation)
         normalized_attachments = self._normalize_asset_refs(attachments, current_user=current_user)
@@ -292,6 +297,7 @@ class AgentService:
         content: str,
         attachments: list[AgentAssetRef],
     ) -> AsyncIterator[tuple[str, object]]:
+        self._reload_runtime_settings()
         conversation = self._get_conversation(conversation_id, current_user=current_user)
         self._ensure_conversation_active(conversation)
         normalized_attachments = self._normalize_asset_refs(attachments, current_user=current_user)

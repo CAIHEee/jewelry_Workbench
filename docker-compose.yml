@@ -81,6 +81,7 @@ services:
       CACHE_JOB_DEDUPE_TTL_SECONDS: ${CACHE_JOB_DEDUPE_TTL_SECONDS:-120}
       CACHE_MODEL_CATALOG_TTL_SECONDS: ${CACHE_MODEL_CATALOG_TTL_SECONDS:-300}
       CACHE_AUTH_ME_TTL_SECONDS: ${CACHE_AUTH_ME_TTL_SECONDS:-60}
+      RUNTIME_CONFIG_FILE: /app/runtime/secrets.env
       TZ: ${TZ:-Asia/Shanghai}
     command:
       - sh
@@ -96,6 +97,7 @@ services:
         condition: service_healthy
     volumes:
       - backend_data:/app/backend/data
+      - ./runtime:/app/runtime
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
       interval: 15s
@@ -152,6 +154,7 @@ services:
       CACHE_JOB_DEDUPE_TTL_SECONDS: ${CACHE_JOB_DEDUPE_TTL_SECONDS:-120}
       CACHE_MODEL_CATALOG_TTL_SECONDS: ${CACHE_MODEL_CATALOG_TTL_SECONDS:-300}
       CACHE_AUTH_ME_TTL_SECONDS: ${CACHE_AUTH_ME_TTL_SECONDS:-60}
+      RUNTIME_CONFIG_FILE: /app/runtime/secrets.env
       TZ: ${TZ:-Asia/Shanghai}
     command:
       - sh
@@ -171,6 +174,7 @@ services:
         condition: service_healthy
     volumes:
       - backend_data:/app/backend/data
+      - ./runtime:/app/runtime
 
   agent:
     image: ${BACKEND_IMAGE}
@@ -227,6 +231,7 @@ services:
       CACHE_JOB_DEDUPE_TTL_SECONDS: ${CACHE_JOB_DEDUPE_TTL_SECONDS:-120}
       CACHE_MODEL_CATALOG_TTL_SECONDS: ${CACHE_MODEL_CATALOG_TTL_SECONDS:-300}
       CACHE_AUTH_ME_TTL_SECONDS: ${CACHE_AUTH_ME_TTL_SECONDS:-60}
+      RUNTIME_CONFIG_FILE: /app/runtime/secrets.env
       TZ: ${TZ:-Asia/Shanghai}
     command:
       - sh
@@ -242,6 +247,7 @@ services:
         condition: service_healthy
     volumes:
       - backend_data:/app/backend/data
+      - ./runtime:/app/runtime
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8010/agent-health"]
       interval: 15s

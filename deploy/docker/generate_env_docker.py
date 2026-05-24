@@ -148,6 +148,7 @@ def main() -> int:
         f"APP_ALLOWED_ORIGIN_REGEX={merged['APP_ALLOWED_ORIGIN_REGEX']}",
         "",
         "# Agent 独立服务与 Qwen DashScope OpenAI-compatible 配置。AGENT_LLM_API_KEY 留空时使用规则兜底回复。",
+        "# 这些模型/API 配置会作为首次启动默认值；后台密钥管理保存后，会写入 runtime/secrets.env 并被 backend/worker/agent 共享读取。",
         f"AGENT_SERVICE_ALLOWED_ORIGINS={merged['AGENT_SERVICE_ALLOWED_ORIGINS']}",
         f"AGENT_LLM_BASE_URL={merged['AGENT_LLM_BASE_URL']}",
         f"AGENT_LLM_API_KEY={merged['AGENT_LLM_API_KEY']}",
